@@ -1,0 +1,574 @@
+{
+  "name": "AI Trading Lab - Market Analysis",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ai-trading-lab-market-analysis",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "3fa5651b-24ef-42aa-9a73-bab87086a101",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const body = $json.body ?? $json;\nconst symbol = body?.symbol;\nconst timeframe = body?.timeframe;\nconst mode = body?.mode;\nconst pairOk = typeof symbol === 'string' && /^[A-Z0-9]+\\/[A-Z0-9]+$/.test(symbol);\nconst timeframeOk = typeof timeframe === 'string' && /^\\d+[mhdw]$/.test(timeframe);\nif (!pairOk || !timeframeOk || mode !== 'DRY_RUN') {\n  return [{ json: { ok: false, statusCode: 400, error: { code: 'INVALID_INPUT', message: 'symbol and timeframe are required; mode must be DRY_RUN.' } } }];\n}\nreturn [{ json: { ok: true, symbol, timeframe, mode: 'DRY_RUN' } }];"
+      },
+      "id": "3fa5651b-24ef-42aa-9a73-bab87086a102",
+      "name": "Validate Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "valid-input-condition",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "3fa5651b-24ef-42aa-9a73-bab87086a103",
+      "name": "Input Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://ferramentas-freqtrade.m5mfeg.easypanel.host/api/v1/pair_candles",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "pair",
+              "value": "={{ $('Validate Input').first().json.symbol }}"
+            },
+            {
+              "name": "timeframe",
+              "value": "={{ $('Validate Input').first().json.timeframe }}"
+            },
+            {
+              "name": "limit",
+              "value": "30"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "3fa5651b-24ef-42aa-9a73-bab87086a104",
+      "name": "Get Freqtrade Candles",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        680,
+        200
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "try {\n  const source = $json;\n  const payload = source?.body ?? source;\n  let rows = [];\n  if (Array.isArray(payload?.data) && Array.isArray(payload?.columns)) {\n    rows = payload.data.map((values) => Object.fromEntries(payload.columns.map((key, i) => [key, values[i] ?? null])));\n  } else if (Array.isArray(payload?.candles)) {\n    rows = payload.candles;\n  } else if (Array.isArray(payload)) {\n    rows = payload;\n  }\n  const fields = ['date','open','high','low','close','volume','rsi','adx','mfi','macd','macdsignal','macdhist','bb_lowerband','bb_middleband','bb_upperband','bb_percent','bb_width','sar','tema','fastd','fastk'];\n  const candles = rows.map((row) => {\n    if (!row || typeof row !== 'object' || Array.isArray(row)) return null;\n    const selected = {};\n    for (const key of fields) if (Object.hasOwn(row, key)) selected[key] = row[key];\n    return selected;\n  }).filter(Boolean).slice(-30);\n  if (!candles.length) return [{ json: { ok: false, statusCode: 502, error: { code: 'NO_CANDLES', message: 'Freqtrade returned no candle rows in a supported format.' } } }];\n  const current = candles.at(-1);\n  const n = (value) => value === null || value === undefined || value === '' ? null : Number.isFinite(Number(value)) ? Number(value) : null;\n  const context = { symbol: $('Validate Input').first().json.symbol, timeframe: $('Validate Input').first().json.timeframe, mode: 'DRY_RUN', current: {\n    price: n(current.close), date: current.date ?? null, volume: n(current.volume), rsi: n(current.rsi), adx: n(current.adx), mfi: n(current.mfi),\n    macd: n(current.macd), macd_signal: n(current.macdsignal), macd_hist: n(current.macdhist), bb_lower: n(current.bb_lowerband),\n    bb_middle: n(current.bb_middleband), bb_upper: n(current.bb_upperband), bb_percent: n(current.bb_percent), bb_width: n(current.bb_width),\n    sar: n(current.sar), tema: n(current.tema), fastd: n(current.fastd), fastk: n(current.fastk), open: n(current.open), high: n(current.high), low: n(current.low)\n  }, candles };\n  return [{ json: { ok: true, context } }];\n} catch (error) {\n  return [{ json: { ok: false, statusCode: 502, error: { code: 'CANDLE_NORMALIZATION_FAILED', message: 'Could not normalize Freqtrade candle response.' } } }];\n}"
+      },
+      "id": "3fa5651b-24ef-42aa-9a73-bab87086a105",
+      "name": "Normalize Market Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        920,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "valid-market-condition",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "3fa5651b-24ef-42aa-9a73-bab87086a106",
+      "name": "Market Data Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1140,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return [{ json: { context: $json.context } }];"
+      },
+      "id": "3fa5651b-24ef-42aa-9a73-bab87086a107",
+      "name": "Prepare AI Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1360,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({\n  model: 'gpt-4o-mini',\n  temperature: 0.1,\n  response_format: { type: 'json_schema', json_schema: { name: 'trading_decision', strict: true, schema: {\n    type: 'object', additionalProperties: false,\n    properties: {\n      decision: { type: 'string', enum: ['BUY', 'SELL', 'HOLD'] },\n      confidence: { type: 'number' },\n      entry: { anyOf: [{ type: 'number' }, { type: 'null' }] },\n      stop_loss: { anyOf: [{ type: 'number' }, { type: 'null' }] },\n      take_profit: { anyOf: [{ type: 'number' }, { type: 'null' }] },\n      reason: { type: 'string' }\n    }, required: ['decision', 'confidence', 'entry', 'stop_loss', 'take_profit', 'reason']\n  } } },\n  messages: [\n    { role: 'system', content: 'You are an experimental market-analysis component. Return only the JSON object matching the schema. Evaluate the supplied market data without calculating or inventing indicators. HOLD is a fully valid decision; never force BUY or SELL. If the data does not support a clear conclusion, return HOLD. This is a dry-run research record, not financial advice. Use null for entry, stop_loss, and take_profit when they are not justified. Confidence is a number from 0 to 1.' },\n    { role: 'user', content: 'Analyze this Freqtrade market context:\\n' + JSON.stringify($('Prepare AI Context').first().json.context) }\n  ]\n}) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "3fa5651b-24ef-42aa-9a73-bab87086a108",
+      "name": "AI Model",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1580,
+        80
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "try {\n  const response = $json.body ?? $json;\n  const raw = response?.choices?.[0]?.message?.content;\n  const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;\n  const validDecision = ['BUY','SELL','HOLD'].includes(parsed?.decision);\n  const validConfidence = typeof parsed?.confidence === 'number' && Number.isFinite(parsed.confidence) && parsed.confidence >= 0 && parsed.confidence <= 1;\n  const nullableFinite = (value) => value === null || (typeof value === 'number' && Number.isFinite(value));\n  const valid = parsed && Object.keys(parsed).sort().join(',') === 'confidence,decision,entry,reason,stop_loss,take_profit'\n    && validDecision && validConfidence && nullableFinite(parsed.entry) && nullableFinite(parsed.stop_loss)\n    && nullableFinite(parsed.take_profit) && typeof parsed.reason === 'string' && parsed.reason.trim().length > 0;\n  if (!valid) return [{ json: { ok: false, statusCode: 502, error: { code: 'INVALID_AI_RESPONSE', message: 'AI response did not satisfy the decision schema.' } } }];\n  return [{ json: { ok: true, statusCode: 200, response: { decision: parsed.decision, confidence: parsed.confidence, entry: parsed.entry, stop_loss: parsed.stop_loss, take_profit: parsed.take_profit, reason: parsed.reason } } }];\n} catch (error) {\n  return [{ json: { ok: false, statusCode: 502, error: { code: 'INVALID_AI_RESPONSE', message: 'AI returned invalid JSON or an invalid decision.' } } }];\n}"
+      },
+      "id": "3fa5651b-24ef-42aa-9a73-bab87086a109",
+      "name": "Validate AI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1800,
+        60
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "valid-ai-condition",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "3fa5651b-24ef-42aa-9a73-bab87086a110",
+      "name": "AI Response Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2020,
+        60
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return [{ json: { statusCode: 200, response: $json.response } }];"
+      },
+      "id": "3fa5651b-24ef-42aa-9a73-bab87086a111",
+      "name": "Success Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2240,
+        -20
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return [{ json: { statusCode: 400, response: { error: $json.error } } }];"
+      },
+      "id": "3fa5651b-24ef-42aa-9a73-bab87086a112",
+      "name": "Input Error Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        680,
+        440
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return [{ json: { statusCode: $json.statusCode || 502, response: { error: $json.error || { code: 'MARKET_DATA_ERROR', message: 'Freqtrade request failed.' } } } }];"
+      },
+      "id": "3fa5651b-24ef-42aa-9a73-bab87086a113",
+      "name": "Market Error Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1360,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return [{ json: { statusCode: 502, response: { error: { code: 'FREQTRADE_UNAVAILABLE', message: 'Freqtrade market data request failed.' } } } }];"
+      },
+      "id": "3fa5651b-24ef-42aa-9a73-bab87086a114",
+      "name": "Freqtrade Request Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        920,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return [{ json: { statusCode: $json.statusCode || 502, response: { error: $json.error || { code: 'AI_PROVIDER_ERROR', message: 'AI provider request failed.' } } } }];"
+      },
+      "id": "3fa5651b-24ef-42aa-9a73-bab87086a115",
+      "name": "AI Error Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2240,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return [{ json: { statusCode: 502, response: { error: { code: 'AI_PROVIDER_UNAVAILABLE', message: 'AI provider request failed.' } } } }];"
+      },
+      "id": "3fa5651b-24ef-42aa-9a73-bab87086a116",
+      "name": "AI Provider Request Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1800,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.response }}",
+        "options": {
+          "responseCode": "={{ $json.statusCode }}"
+        }
+      },
+      "id": "3fa5651b-24ef-42aa-9a73-bab87086a117",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        2500,
+        240
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Validate Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Input": {
+      "main": [
+        [
+          {
+            "node": "Input Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Input Valid?": {
+      "main": [
+        [
+          {
+            "node": "Get Freqtrade Candles",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Input Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Freqtrade Candles": {
+      "main": [
+        [
+          {
+            "node": "Normalize Market Data",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Freqtrade Request Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Market Data": {
+      "main": [
+        [
+          {
+            "node": "Market Data Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Market Data Valid?": {
+      "main": [
+        [
+          {
+            "node": "Prepare AI Context",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Market Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare AI Context": {
+      "main": [
+        [
+          {
+            "node": "AI Model",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Model": {
+      "main": [
+        [
+          {
+            "node": "Validate AI Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "AI Provider Request Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate AI Response": {
+      "main": [
+        [
+          {
+            "node": "AI Response Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Response Valid?": {
+      "main": [
+        [
+          {
+            "node": "Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "AI Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Success Response": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Input Error Response": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Market Error Response": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Freqtrade Request Error": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Error Response": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Provider Request Error": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false
+  },
+  "versionId": "3fa5651b-24ef-42aa-9a73-bab87086a120",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": []
+}
