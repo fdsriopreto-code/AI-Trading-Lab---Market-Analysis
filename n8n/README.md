@@ -30,17 +30,17 @@ In the Code node after Gemini, parse `content.parts[0].text` as JSON (not OpenAI
 
 ## Workflow behavior
 
-Webhook path: `POST /webhook/ai-trading-lab-market-analysis` (n8n production URL includes `/webhook/`). It only accepts `{ "symbol": "BTC/USDT", "timeframe": "5m", "mode": "DRY_RUN" }`. The workflow requests up to 30 candles using only `GET /api/v1/pair_candles?pair=...&timeframe=...&limit=30`. It does not call start/stop, balance, buy, sell, force-entry, or trade endpoints.
+Webhook path: `POST /webhook/ai-trading-lab-market-analysis` (n8n production URL includes `/webhook/`). It accepts `{ "symbol": "BTC/USDT", "timeframe": "5m", "mode": "DRY_RUN", "paper_context": { ... } }`. The workflow requests up to 30 candles using only `GET /api/v1/pair_candles?pair=...&timeframe=...&limit=30`. `paper_context` contains a simulated portfolio snapshot and historical forward-outcome summary, so include it in the AI user prompt. It does not call start/stop, balance, buy, sell, force-entry, or trade endpoints.
 
 Freqtrade responses in both `columns` + `data` array form and object-row form are normalized. Only date, OHLCV, and the specified indicators are kept. The latest row is used for `current`; the last 30 rows are sent to the model unchanged. Indicators are not recalculated. HOLD remains a valid model decision.
 
-Successful webhook response has exactly these fields (HTTP 200):
+Successful webhook response includes the validated decision plus the current market snapshot and candles (HTTP 200):
 
 ```json
-{"decision":"HOLD","confidence":0.67,"entry":null,"stop_loss":null,"take_profit":null,"reason":"Insufficient confirmation."}
+{"decision":"HOLD","confidence":0.67,"entry":null,"stop_loss":null,"take_profit":null,"reason":"Insufficient confirmation.","market":{"price":81298,"high":81320,"low":81200,"date":"2026-09-24T10:00:00Z"},"candles":[{"date":"2026-09-24T10:00:00Z","close":81298}]}
 ```
 
-Invalid input returns HTTP 400 with a structured `error`; Freqtrade/model/schema failures return HTTP 502 with a structured `error`. The backend accepts only the exact successful decision shape and records it in PostgreSQL. It does not save error responses.
+Invalid input returns HTTP 400 with a structured `error`; Freqtrade/model/schema failures return HTTP 502 with a structured `error`. The `market` value must come from `Prepare AI Context.context.current`; `candles` must come from `Prepare AI Context.context.candles`. The backend stores this snapshot, uses a valid market price for paper fills, and evaluates old BUY/SELL decisions after the configured candle horizon. If your response only has the six decision fields, the decision is saved but the paper trade is skipped.
 
 ## Credentials required in n8n
 
@@ -49,3 +49,43 @@ Invalid input returns HTTP 400 with a structured `error`; Freqtrade/model/schema
 - Header Auth: OpenAI API key.
 
 Credentials stay in n8n's credential store. The workflow JSON contains no credentials or tokens. You attach each credential in your n8n instance after import.
+
+
+## Paper trading response wiring (required)
+
+The backend does not let the model execute orders. Update the active workflow so its `Validate Input` Code node preserves the extra account context from the API request:
+
+```javascript
+const body = $json.body ?? $json;
+const symbol = body.symbol;
+const timeframe = body.timeframe;
+const paperContext = body.paper_context && typeof body.paper_context === 'object' ? body.paper_context : null;
+// Keep your existing symbol/timeframe/mode validation here.
+return [{ json: { ok: true, symbol, timeframe, mode: 'DRY_RUN', paperContext } }];
+```
+
+Update `Prepare AI Context` to retain the context for the AI prompt while preserving the market candles:
+
+```javascript
+const request = $('Validate Input').first().json;
+return [{ json: { context: $json.context, paperContext: request.paperContext } }];
+```
+
+The AI prompt should include both `Prepare AI Context.context` and `Prepare AI Context.paperContext`. After `Validate AI Response` has produced `{ok:true,response:{...decision}}`, update the success Code node so it attaches the market snapshot from the normalized Freqtrade context:
+
+```javascript
+const context = $('Prepare AI Context').first().json.context;
+return [{ json: { statusCode: 200, response: { ...$json.response, market: context.current, candles: context.candles } } }];
+```
+
+If your AI node is a DeepSeek **AI Agent**, keep its JSON parser/validator before this success node; the code above is independent of the AI provider. Also include `paper_context` in the agent's prompt, for example:
+
+```text
+CONTEXTO DE MERCADO:
+{{ JSON.stringify($('Prepare AI Context').first().json.context) }}
+
+CARTEIRA SIMULADA E RESULTADOS HISTÓRICOS:
+{{ JSON.stringify($('Validate Input').first().json.paperContext) }}
+```
+
+The supplied export is a template and importing it does not update a workflow already active in n8n. Apply the response and prompt changes to the active DeepSeek workflow and activate/save it. Keep paper trading in DRY_RUN; no exchange order node is needed.

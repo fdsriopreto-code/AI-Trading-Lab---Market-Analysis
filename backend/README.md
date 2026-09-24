@@ -1,52 +1,64 @@
 # AI Trading Lab API
 
-Node.js + TypeScript + Fastify API backed by PostgreSQL. The browser calls only this API. n8n is a server-side integration; Freqtrade is not connected in this stage and no order execution endpoint exists.
+Node.js + TypeScript + Fastify API backed by PostgreSQL. The browser calls only this API. n8n obtains market candles from Freqtrade and requests an AI decision. The API applies that decision to a long-only paper portfolio; it never submits exchange orders.
 
 ## Frontend runtime configuration
 
-The existing static frontend reads `outputs/config.js`; this is a public runtime config file, not a secrets file. Set `apiBaseUrl` to the API's public HTTPS origin. Use `mode: 'api'` when configured. For local UI development without a backend, explicitly set `mode: 'mock'`; those values are visibly marked DEMO DATA. Keep credentials and webhook tokens out of this file. If the API URL is set, failures stay visible and never silently fall back to mock data.
-
-The browser origin must exactly match `FRONTEND_ORIGIN` on the API. When developing locally, use the HTTP origin from your local static server (for example `http://localhost:8000`). Opening `index.html` as a `file://` URL is not a supported API setup.
+The browser reads `config.js`, a public runtime configuration file, not a secrets file. Keep credentials and webhook tokens out of it. The browser origin must exactly match `FRONTEND_ORIGIN` on the API. Opening `index.html` as `file://` is not a supported API setup.
 
 ## API endpoints
 
-- `GET /health` → `{ "api": "ok", "database": "ok" }`; if PostgreSQL is down, HTTP 503 with `{ "api": "ok", "database": "unavailable" }`.
-- `GET /api/dashboard` → mode, latest decision, open trade count, plus `market: null` and `balance: null` until providers are added.
-- `GET /api/ai/decisions/latest` → decision object or `null`.
-- `GET /api/ai/decisions?symbol=BTC/USDT&decision=HOLD&limit=50` → array of decisions.
-- `GET /api/trades` → array of simulated trades.
-- `POST /api/ai/analyze` → request `{ "symbol": "BTC/USDT", "timeframe": "5m" }`; returns the persisted decision.
+- `GET /health` → API and PostgreSQL health.
+- `GET /api/config` and `GET /api/markets` → configured paper markets and risk settings.
+- `GET /api/dashboard` → latest decision, open positions, last recorded market snapshot, equity, and paper portfolio.
+- `GET /api/paper/portfolio` → simulated cash, marked equity, realized/unrealized PnL, drawdown, closed-trade stats, and limits.
+- `GET /api/paper/learning` → forward outcome labels grouped by symbol/timeframe; results are marked exploratory below 30 examples.
+- `GET /api/paper/learning/dataset?symbol=BTC/USDT&timeframe=5m&limit=1000` → labeled examples with indicator features for offline training research.
+- `GET /api/ai/decisions/latest` → most recent decision or `null`.
+- `GET /api/ai/decisions?symbol=BTC/USDT&decision=HOLD&limit=50` → decision history.
+- `GET /api/trades` → open and closed simulated trades, with fees and close reason.
+- `GET /api/market/:symbol` and `/api/market/:symbol/candles?timeframe=5m&limit=100` → most recent snapshot received during analysis, not a continuously updated exchange feed.
+- `POST /api/ai/analyze` → `{ "symbol": "BTC/USDT", "timeframe": "5m" }`; calls n8n, persists the decision, and applies paper risk rules.
+- `POST /api/ai/analyze/all` → `{ "timeframe": "5m" }`; analyzes every configured symbol in DRY_RUN.
 
-Decision API objects use camelCase: `id`, `symbol`, `timeframe`, `decision`, `confidence` (0–1), `price`, `entry`, `stopLoss`, `takeProfit`, `reason`, `indicators`, `candles`, `createdAt`. Confidence is stored as a fraction. Market and balance values are absent (`null`) until a real provider is connected.
+Decision objects use camelCase. Confidence is stored as a fraction. BUY can open a long position; SELL closes an open long; HOLD does not trade. A SELL with no open position never opens a short. Duplicate positions are blocked. Stop-loss/take-profit checks run whenever a new snapshot for that symbol arrives; if both levels occur in one candle, the simulator assumes the stop was hit first. A decision without a valid market price is recorded but cannot open a position.
 
 ## n8n request and response contract
 
-Set `N8N_ANALYZE_WEBHOOK_URL` and optionally `N8N_WEBHOOK_TOKEN` in the backend service only. On analysis, the backend forwards exactly:
+Set `N8N_ANALYZE_WEBHOOK_URL` and optionally `N8N_WEBHOOK_TOKEN` in the backend service only. The backend sends the requested market plus a compact paper portfolio and historical performance context:
 
 ```json
-{"symbol":"BTC/USDT","timeframe":"5m","mode":"DRY_RUN"}
+{"symbol":"BTC/USDT","timeframe":"5m","mode":"DRY_RUN","paper_context":{"portfolio":{"...":"..."},"performance":{"...":"..."}}}
 ```
 
-n8n must synchronously return a JSON object:
+A successful response contains the decision and market snapshot/candles:
 
 ```json
-{"decision":"BUY","confidence":0.78,"entry":81298,"stop_loss":80500,"take_profit":82500,"reason":"Example"}
+{"decision":"BUY","confidence":0.78,"entry":81298,"stop_loss":80500,"take_profit":82500,"reason":"Example","market":{"price":81298,"high":81320,"low":81200,"date":"2026-09-24T10:00:00Z"},"candles":[{"date":"2026-09-24T10:00:00Z","close":81298}]}
 ```
 
-`decision` is `BUY`, `SELL`, or `HOLD`; `confidence` is a number from 0 through 1; entry/stop/take-profit are numbers or `null`; reason is a string. Invalid/non-2xx responses are logged, return HTTP 502, and are not saved. This stage does not call Freqtrade. The n8n workflow can be developed against this contract, then later gain a server-side Freqtrade step.
+`decision` is `BUY`, `SELL`, or `HOLD`; confidence is 0–1; levels are numbers or `null`; reason is text. Copy `market` from `Prepare AI Context.context.current` and `candles` from `Prepare AI Context.context.candles`. Responses without market/candles are accepted for compatibility, but the decision is not paper-filled and forward outcomes cannot be calculated from that response. See `../n8n/README.md` for the exact n8n wiring.
+
+## Paper portfolio and learning data
+
+Migration `003_paper_portfolio.sql` creates a persistent USDT wallet, extends trades with fees/risk levels, and adds forward decision outcomes. Existing PostgreSQL data is preserved. `PAPER_INITIAL_BALANCE` seeds the account only the first time; changing that setting later does not reset an existing wallet.
+
+The simulator is long-only. It limits each position to `PAPER_MAX_TRADE_PCT` of equity, caps total exposure with `PAPER_MAX_EXPOSURE_PCT`, limits the number of open positions, deducts fee and entry/exit slippage estimates, and blocks entries after the drawdown limit. The server enforces these checks independently of the model. No real-money order or exchange credential is used.
+
+BUY/SELL decisions receive a forward outcome label after `PAPER_OUTCOME_HORIZON_CANDLES` candles. Labels use a later candle and subtract estimated round-trip fees and slippage. These outcomes are exploratory and do not modify DeepSeek model weights. n8n receives account/performance context as feedback; that is memory/context, not model training.
+
+`PAPER_AUTO_ANALYZE` defaults to `false` to avoid unexpected model/API usage. Set it to `true` to scan configured symbols on `PAPER_AUTO_TIMEFRAME` every `PAPER_AUTO_INTERVAL_MINUTES` (minimum five minutes). Manual analysis and “Analyze all” work independently.
 
 ## Local setup
 
-1. Copy `.env.example` to `.env`; set a PostgreSQL `DATABASE_URL`, local `FRONTEND_ORIGIN`, and optionally the n8n webhook settings.
+1. Copy `.env.example` to `.env` and configure PostgreSQL plus the n8n webhook values.
 2. `npm ci`
 3. `npm run build`
 4. `npm run db:migrate`
 5. `npm start`
 
-The migration runner serializes concurrent container starts, tracks applied SQL files, and safely converts legacy confidence percentages (for example `67`) into fractions (`0.67`). Back up the database before applying schema migrations.
+The migration runner serializes concurrent starts and tracks applied SQL files. Back up PostgreSQL before applying migrations.
 
 ## EasyPanel / Docker Compose
 
-For the existing EasyPanel App + managed PostgreSQL setup, use the repository-root `Dockerfile` and expose port 3000. It bundles the frontend into the API image and serves both on the same origin. Alternatively use the repository-root `docker-compose.yml` as an EasyPanel Compose service (Git branch `main`, build path `/`): it builds this API from this directory's `Dockerfile`, serves the static frontend from `frontend`, and starts PostgreSQL with a named `postgres_data` volume. Add the public domain to `frontend` on internal port 80. Do not publish PostgreSQL or API ports.
-
-Set `POSTGRES_PASSWORD` in EasyPanel to a long random alphanumeric value. `DATABASE_URL` is composed from the Postgres variables, and `PGSSL=false` is appropriate only for the private Docker network in this Compose setup. The same-origin frontend requires no public API URL and does not need cross-origin browser access. Configure `N8N_ANALYZE_WEBHOOK_URL` and `N8N_WEBHOOK_TOKEN` as Compose environment values after setting up the workflow. For backups and integration setup, see the root deployment guide and `n8n/README.md`.
+For an EasyPanel App plus managed PostgreSQL, use the root `Dockerfile` and expose port `3000`. For Compose, use root `docker-compose.yml`; it runs frontend, API, and PostgreSQL on a private network. Do not publish PostgreSQL or API ports. Set a strong URL-safe `POSTGRES_PASSWORD`; keep live secrets in EasyPanel, never in Git. Configure the paper variables in `.env.example` on the API service.

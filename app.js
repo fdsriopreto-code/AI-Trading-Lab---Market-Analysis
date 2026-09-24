@@ -22,9 +22,11 @@
     return data;
   }
   const apiService = {
+    config: () => request('/api/config'),
     dashboard: () => request('/api/dashboard'), latest: () => request('/api/ai/decisions/latest'),
-    decisions: () => request('/api/ai/decisions'), trades: () => request('/api/trades'),
-    health: () => request('/health'), analyze: (symbol, timeframe) => request('/api/ai/analyze', { method: 'POST', body: JSON.stringify({ symbol, timeframe }) })
+    decisions: () => request('/api/ai/decisions'), trades: () => request('/api/trades'), learning: () => request('/api/paper/learning'),
+    health: () => request('/health'), analyze: (symbol, timeframe) => request('/api/ai/analyze', { method: 'POST', body: JSON.stringify({ symbol, timeframe }) }),
+    analyzeAll: (timeframe) => request('/api/ai/analyze/all', { method: 'POST', body: JSON.stringify({ timeframe }) })
   };
   const services = mode === 'api' ? apiService : mode === 'mock' ? {
     dashboard: async () => demo.dashboard, latest: async () => demo.dashboard.latestDecision,
@@ -41,19 +43,45 @@
   function dateTime(value) { if (!value) return 'N/A'; const date = new Date(value); return Number.isNaN(date.getTime()) ? 'N/A' : date.toLocaleString(locale()); }
   function badge(decision) { const node = el('span', decision || 'N/A', `badge ${decision === 'BUY' ? 'buy' : decision === 'SELL' ? 'sell' : 'hold'}`); return node; }
   function makeCell(row, text, className) { const td = el('td', text == null || text === '' ? '—' : String(text), className); row.appendChild(td); return td; }
+  function renderRecentDecisions(rows, failed = false) {
+    const body=$('#recentDecisions'); if(!body) return; body.replaceChildren();
+    if(!rows?.length) { const tr=el('tr'); const td=el('td',failed?'Unable to load AI decisions.':'No AI decisions yet.','row-empty'); td.colSpan=5; tr.appendChild(td); body.appendChild(tr); return; }
+    for(const item of rows.slice(0,5)) { const tr=el('tr'); makeCell(tr,dateTime(item.createdAt),'mono'); makeCell(tr,item.symbol); makeCell(tr,item.price==null?'N/A':Number(item.price).toLocaleString(locale()),'mono'); const d=el('td'); d.appendChild(badge(item.decision)); tr.appendChild(d); makeCell(tr,item.confidence==null?'N/A':percent(item.confidence),'mono'); body.appendChild(tr); }
+  }
   function renderDecisions(rows, failed = false) {
+    renderRecentDecisions(rows, failed);
     const body = $('#view-AI Decisions tbody'); if (!body) return; body.replaceChildren();
     if (!rows?.length) { const tr = el('tr'); const td = el('td', failed ? 'Unable to load AI decisions.' : 'No AI decisions yet.', 'row-empty'); td.colSpan = 9; tr.appendChild(td); body.appendChild(tr); return; }
     for (const item of rows) { const tr = el('tr'); makeCell(tr, dateTime(item.createdAt), 'mono'); makeCell(tr, item.symbol); makeCell(tr, item.price == null ? 'N/A' : Number(item.price).toLocaleString(locale()), 'mono'); const d = el('td'); d.appendChild(badge(item.decision)); tr.appendChild(d); makeCell(tr, item.confidence == null ? 'N/A' : percent(item.confidence), 'mono'); makeCell(tr, item.entry); makeCell(tr, item.stopLoss); makeCell(tr, item.takeProfit); makeCell(tr, item.reason); body.appendChild(tr); }
   }
   function renderTrades(rows, failed = false) {
-    const host = $('#view-Trades .card'); if (!host) return; host.replaceChildren();
+    const host = $('#tradesTable'); if (!host) return; host.replaceChildren();
     const wrap = el('div', undefined, 'table-wrap'); const table = el('table', undefined, 'table');
-    const head = el('thead'); const hr = el('tr'); for (const label of ['ID','SYMBOL','SIDE','ENTRY','EXIT','AMOUNT','PNL','OPEN TIME','CLOSE TIME','STATUS']) hr.appendChild(el('th', label)); head.appendChild(hr); table.appendChild(head);
+    const head = el('thead'); const hr = el('tr'); for (const label of ['ID','SYMBOL','SIDE','ENTRY','LAST','EXIT','QUANTITY','PNL','FEES','OPEN TIME','CLOSE TIME','STATUS']) hr.appendChild(el('th', label)); head.appendChild(hr); table.appendChild(head);
     const body = el('tbody');
-    if (!rows?.length) { const tr = el('tr'); const td = el('td', failed ? 'Unable to load simulated trades.' : 'No simulated trades yet.', 'row-empty'); td.colSpan = 10; tr.appendChild(td); body.appendChild(tr); }
-    else for (const trade of rows) { const tr = el('tr'); for (const value of [trade.id, trade.symbol, trade.side, trade.entry, trade.exit, trade.amount, trade.pnl, dateTime(trade.openedAt), dateTime(trade.closedAt), trade.status]) makeCell(tr, value, 'mono'); body.appendChild(tr); }
+    if (!rows?.length) { const tr = el('tr'); const td = el('td', failed ? 'Unable to load simulated trades.' : 'No simulated trades yet.', 'row-empty'); td.colSpan = 12; tr.appendChild(td); body.appendChild(tr); }
+    else for (const trade of rows) { const tr = el('tr'); for (const value of [trade.id, trade.symbol, trade.side, trade.entry, trade.lastPrice, trade.exit, trade.amount, trade.pnl, Number(trade.entryFee || 0) + Number(trade.exitFee || 0), dateTime(trade.openedAt), dateTime(trade.closedAt), trade.status === 'open' ? 'OPEN' : trade.closeReason || 'CLOSED']) makeCell(tr, value, 'mono'); body.appendChild(tr); }
     table.appendChild(body); wrap.appendChild(table); host.appendChild(wrap); host.appendChild(el('p', 'SIMULATED TRADES · No real orders are placed.', 'disclaimer'));
+  }
+  function renderPortfolio(paper) {
+    const host = $('#portfolioSummary'); if (!host || !paper) return;
+    host.replaceChildren();
+    const head = el('div', undefined, 'card-head'); head.append(el('div', 'Paper portfolio', 'card-title'), el('span', 'USDT · SIMULATED', 'dry')); host.appendChild(head);
+    const grid = el('div', undefined, 'metrics');
+    const metrics = [['Equity', money(paper.equity)], ['Cash available', money(paper.cashBalance)], ['Realized PnL', money(paper.realizedPnl)], ['Unrealized PnL', money(paper.unrealizedPnl)], ['Return', percent(paper.returnPct)], ['Drawdown', percent(paper.drawdownPct)], ['Open positions', String(paper.openPositions)], ['Closed trades', String(paper.closedTrades)]];
+    for (const [label,value] of metrics) { const card=el('div',undefined,'metric'); card.append(el('div',label,'metric-top'),el('div',value,'value')); grid.appendChild(card); }
+    host.appendChild(grid);
+    host.appendChild(el('p',t('Limits: {trade}% max per entry · {exposure}% max exposure · {positions} positions · {drawdown}% drawdown stop. Fees: {fees}%.',{trade:(paper.settings.maxTradePct*100).toFixed(0),exposure:(paper.settings.maxExposurePct*100).toFixed(0),positions:paper.settings.maxOpenTrades,drawdown:(paper.settings.maxDrawdownPct*100).toFixed(0),fees:(paper.settings.feeRate*100).toFixed(2)}),'disclaimer'));
+  }
+  function renderLearning(data) {
+    const host=$('#learningSummary'); if(!host || !data) return; host.replaceChildren();
+    host.appendChild(el('p',t('Forward labels after {count} candles · {samples} evaluated BUY/SELL decisions. Minimum sample for interpretation: {minimum}.',{count:data.horizonCandles,samples:data.totalEvaluatedDecisions,minimum:data.minimumSampleForInterpretation}),'sub'));
+    if(!data.byMarket?.length) { host.appendChild(el('p','No outcomes evaluated yet. New analyses must include market candles, and the configured forward horizon must pass.','row-empty')); return; }
+    const wrap=el('div',undefined,'table-wrap'); const table=el('table',undefined,'table'); const thead=el('thead'); const trh=el('tr');
+    for(const title of ['SYMBOL','TIMEFRAME','SAMPLE','FAVORABLE','UNFAVORABLE','FLAT','AVG. DIRECTIONAL RETURN']) trh.appendChild(el('th',title)); thead.appendChild(trh); table.appendChild(thead);
+    const body=el('tbody'); for(const row of data.byMarket) { const tr=el('tr'); for(const value of [row.symbol,row.timeframe,row.sampleCount,row.favorable,row.unfavorable,row.flat,row.avgDirectionalReturn===null?'N/A':percent(row.avgDirectionalReturn)]) makeCell(tr,value,'mono'); body.appendChild(tr); }
+    table.appendChild(body); wrap.appendChild(table); host.appendChild(wrap);
+    host.appendChild(el('p',data.sufficientSample?'Forward outcomes are available for analysis. They are not a guarantee of future performance.':'Small sample: treat these results as exploratory, not evidence of a reliable edge.','disclaimer'));
   }
   function renderLatest(item) {
     const decision = item?.decision ?? null; setText('#decision', decision); setText('#metricDecision', decision); setText('#confidence', item?.confidence, percent); setText('#metricConfidence', item?.confidence, percent);
@@ -83,12 +111,12 @@
       return;
     }
     setSource('CONNECTING'); setState('loading', 'Loading dashboard and activity from API…');
-    const results = await Promise.allSettled([services.dashboard(), services.latest(), services.decisions(), services.trades(), services.health()]);
-    const [dashboard, latest, decisions, trades, health] = results;
+    const results = await Promise.allSettled([services.dashboard(), services.latest(), services.decisions(), services.trades(), services.health(), services.learning()]);
+    const [dashboard, latest, decisions, trades, health, learning] = results;
     if (dashboard.status === 'fulfilled') {
       const data = dashboard.value; setSource('LIVE DATA', true); setText('#openTrades', data.openTrades);
       setText('#price', data.market?.price, money); setText('#change24h', data.market?.change24h, v => `${v >= 0 ? '+' : ''}${(v * 100).toFixed(2)}%`);
-      setText('#balance', data.balance?.total, money);
+      setText('#balance', data.balance?.total, money); renderPortfolio(data.portfolio);
       if (data.latestDecision) renderLatest(data.latestDecision); else renderLatest(null);
       const foot = $('.metric .foot'); if (foot) foot.textContent = data.market ? 'LIVE DATA · BACKEND' : 'N/A · MARKET PROVIDER NOT CONNECTED';
       const chartCaption = $('.chart-card .card-sub'); if (chartCaption) chartCaption.textContent = data.market ? 'MARKET DATA FROM BACKEND' : 'NO MARKET PROVIDER CONNECTED';
@@ -96,13 +124,14 @@
     if (latest.status === 'fulfilled') renderLatest(latest.value);
     if (decisions.status === 'fulfilled') renderDecisions(decisions.value); else renderDecisions([], true);
     if (trades.status === 'fulfilled') renderTrades(trades.value); else renderTrades([], true);
+    if (learning.status === 'fulfilled') renderLearning(learning.value);
     const healthNode = $('.status');
     if (healthNode) healthNode.innerHTML = health.status === 'fulfilled' && health.value.api === 'ok' && health.value.database === 'ok' ? `<i class="dot"></i> ${t('SYSTEM ONLINE')}` : `<i class="dot"></i> ${t('API / DB ISSUE')}`;
     const failures = results.filter(result => result.status === 'rejected');
     if (failures.length) setState('error', t('API data is incomplete ({count} request(s) failed). Mock values are not substituted. {error}', { count: failures.length, error: failures[0].reason?.message || '' }));
-    else setState('success', 'LIVE DATA · Loaded from the configured backend API. Market price and balance show N/A until those providers are connected.');
+    else setState('success', 'PAPER TRADING · Analyses and simulated portfolio loaded from PostgreSQL. Prices update when an analysis runs.');
   }
-  function selectedSymbol() { const select = $('#view-Market select'); return (select?.value || 'BTC / USDT').replaceAll(' ', ''); }
+  function selectedSymbol() { const select = $('#marketSymbol'); return (select?.value || 'BTC/USDT').replaceAll(' ', ''); }
   function selectedTimeframe() { return $('#timeframes button.selected')?.textContent?.trim() || '5m'; }
 
   document.querySelectorAll('#nav button,.nav-jump').forEach(button => button.addEventListener('click', () => {
@@ -114,17 +143,29 @@
   document.querySelectorAll('#timeframes button').forEach(button => button.addEventListener('click', () => { document.querySelectorAll('#timeframes button').forEach(item => item.classList.remove('selected')); button.classList.add('selected'); }));
   let toastTimer; function toast(message) { const node = $('#toast'); node.textContent = message; node.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => node.classList.remove('show'), 3500); }
   $('#refresh').onclick = async event => { const button = event.currentTarget; button.disabled = true; button.textContent = '↻  Loading…'; await loadData(); button.disabled = false; button.textContent = '↻  Refresh'; };
+  async function loadMarketConfig() {
+    if (mode !== 'api') return;
+    try { const config = await services.config(); for (const select of [$('#marketSymbol'), $('#view-Settings select')].filter(Boolean)) { select.replaceChildren(); for (const symbol of config.symbols || []) { const option=el('option',symbol); option.value=symbol; select.appendChild(option); } } const auto=config.paperSettings?.autoAnalyze; const status=$('#marketStatus'); if(status) status.textContent=t('Markets from allowlist: {count}. Scheduled scan: {status} ({timeframe}, every {minutes} min).',{count:(config.symbols||[]).length,status:auto?'ON':'OFF',timeframe:config.paperSettings?.autoTimeframe||'5m',minutes:config.paperSettings?.autoIntervalMinutes||5}); }
+    catch (error) { setState('error', t('Could not load configured markets: {error}',{error:error.message})); }
+  }
+  $('#analyzeAll')?.addEventListener('click', async event => {
+    if (mode !== 'api') { toast('Configure the backend API before requesting analysis.'); return; }
+    const button=event.currentTarget; button.disabled=true; button.textContent=t('Analyzing all…');
+    try { const result=await services.analyzeAll(selectedTimeframe()); const succeeded=result.results.filter(item=>item.ok).length; toast(t('Paper analysis completed for {succeeded}/{total} markets.',{succeeded,total:result.results.length})); await loadData(); }
+    catch(error) { setState('error',error.message||t('Batch analysis failed.')); toast(error.message||t('Batch analysis failed.')); }
+    finally { button.disabled=false; button.textContent=t('Analyze all'); }
+  });
   document.querySelectorAll('.analyze').forEach(button => button.addEventListener('click', async () => {
     if (mode !== 'api') { toast(mode === 'mock' ? 'Demo mode: configure a backend API to request analysis.' : 'Configure the backend API before requesting analysis.'); return; }
     const buttons = [...document.querySelectorAll('.analyze')]; buttons.forEach(item => { item.disabled = true; item.textContent = 'Analyzing market…'; });
     setState('loading', t('Analyzing {symbol} on {timeframe}…', { symbol: selectedSymbol(), timeframe: selectedTimeframe() }));
     try {
       const result = await services.analyze(selectedSymbol(), selectedTimeframe());
-      renderLatest(result); await loadData(); toast('Analysis recorded by the backend.');
+      renderLatest(result); await loadData(); toast(t(result.paperMessage || 'Analysis recorded by the backend.'));
     } catch (error) { setState('error', error.message || 'Analysis request failed.'); toast(error.message || 'Analysis request failed.'); }
-    finally { buttons.forEach(item => { item.disabled = false; item.innerHTML = '✳ &nbsp;Analyze now'; }); }
+    finally { buttons.forEach(item => { item.disabled = false; item.innerHTML = item.id === 'analyze' ? '✳ &nbsp;Analyze now' : '✳ &nbsp;Analyze selected'; }); }
   }));
   window.addEventListener('ai-trading-lab-language-change', () => { if (mode === 'api' || mode === 'mock') loadData(); });
   const refresh = $('#refresh'); if (refresh) refresh.setAttribute('aria-label', 'Refresh dashboard data');
-  loadData();
+  loadMarketConfig().finally(loadData);
 })();

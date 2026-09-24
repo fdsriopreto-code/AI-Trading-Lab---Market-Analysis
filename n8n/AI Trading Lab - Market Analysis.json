@@ -21,7 +21,7 @@
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const body = $json.body ?? $json;\nconst symbol = body?.symbol;\nconst timeframe = body?.timeframe;\nconst mode = body?.mode;\nconst pairOk = typeof symbol === 'string' && /^[A-Z0-9]+\\/[A-Z0-9]+$/.test(symbol);\nconst timeframeOk = typeof timeframe === 'string' && /^\\d+[mhdw]$/.test(timeframe);\nif (!pairOk || !timeframeOk || mode !== 'DRY_RUN') {\n  return [{ json: { ok: false, statusCode: 400, error: { code: 'INVALID_INPUT', message: 'symbol and timeframe are required; mode must be DRY_RUN.' } } }];\n}\nreturn [{ json: { ok: true, symbol, timeframe, mode: 'DRY_RUN' } }];"
+        "jsCode": "const body = $json.body ?? $json;\nconst symbol = body?.symbol;\nconst timeframe = body?.timeframe;\nconst mode = body?.mode;\nconst pairOk = typeof symbol === 'string' && /^[A-Z0-9]+\\/[A-Z0-9]+$/.test(symbol);\nconst timeframeOk = typeof timeframe === 'string' && /^\\d+[mhdw]$/.test(timeframe);\nif (!pairOk || !timeframeOk || mode !== 'DRY_RUN') {\n  return [{ json: { ok: false, statusCode: 400, error: { code: 'INVALID_INPUT', message: 'symbol and timeframe are required; mode must be DRY_RUN.' } } }];\n}\nconst paperContext = body?.paper_context && typeof body.paper_context === 'object' ? body.paper_context : null;\nreturn [{ json: { ok: true, symbol, timeframe, mode: 'DRY_RUN', paperContext } }];"
       },
       "id": "3fa5651b-24ef-42aa-9a73-bab87086a102",
       "name": "Validate Input",
@@ -154,7 +154,7 @@
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "return [{ json: { context: $json.context } }];"
+        "jsCode": "const request = $('Validate Input').first().json;\nreturn [{ json: { context: $json.context, paperContext: request.paperContext } }];"
       },
       "id": "3fa5651b-24ef-42aa-9a73-bab87086a107",
       "name": "Prepare AI Context",
@@ -183,7 +183,7 @@
         "sendBody": true,
         "contentType": "raw",
         "rawContentType": "application/json",
-        "body": "={{ JSON.stringify({\n  model: 'gpt-4o-mini',\n  temperature: 0.1,\n  response_format: { type: 'json_schema', json_schema: { name: 'trading_decision', strict: true, schema: {\n    type: 'object', additionalProperties: false,\n    properties: {\n      decision: { type: 'string', enum: ['BUY', 'SELL', 'HOLD'] },\n      confidence: { type: 'number' },\n      entry: { anyOf: [{ type: 'number' }, { type: 'null' }] },\n      stop_loss: { anyOf: [{ type: 'number' }, { type: 'null' }] },\n      take_profit: { anyOf: [{ type: 'number' }, { type: 'null' }] },\n      reason: { type: 'string' }\n    }, required: ['decision', 'confidence', 'entry', 'stop_loss', 'take_profit', 'reason']\n  } } },\n  messages: [\n    { role: 'system', content: 'Você é um componente experimental de análise de mercado. Retorne somente o objeto JSON do schema. Avalie os dados recebidos sem inventar nem recalcular indicadores. Escreva o campo reason em Português do Brasil. HOLD é uma decisão válida; nunca force BUY ou SELL. Se os dados não sustentarem uma conclusão clara, retorne HOLD. Este é um registro de pesquisa em simulação, não uma recomendação de investimento. Use null para entry, stop_loss e take_profit quando não houver justificativa. Confidence deve ser um número entre 0 e 1.' },\n    { role: 'user', content: 'Analise este contexto de mercado do Freqtrade em Português do Brasil:\\n' + JSON.stringify($('Prepare AI Context').first().json.context) }\n  ]\n}) }}",
+        "body": "={{ JSON.stringify({\n  model: 'gpt-4o-mini',\n  temperature: 0.1,\n  response_format: { type: 'json_schema', json_schema: { name: 'trading_decision', strict: true, schema: {\n    type: 'object', additionalProperties: false,\n    properties: {\n      decision: { type: 'string', enum: ['BUY', 'SELL', 'HOLD'] },\n      confidence: { type: 'number' },\n      entry: { anyOf: [{ type: 'number' }, { type: 'null' }] },\n      stop_loss: { anyOf: [{ type: 'number' }, { type: 'null' }] },\n      take_profit: { anyOf: [{ type: 'number' }, { type: 'null' }] },\n      reason: { type: 'string' }\n    }, required: ['decision', 'confidence', 'entry', 'stop_loss', 'take_profit', 'reason']\n  } } },\n  messages: [\n    { role: 'system', content: 'Você é um componente experimental de análise de mercado. Retorne somente o objeto JSON do schema. Avalie os dados recebidos sem inventar nem recalcular indicadores. Escreva o campo reason em Português do Brasil. HOLD é uma decisão válida; nunca force BUY ou SELL. Se os dados não sustentarem uma conclusão clara, retorne HOLD. Este é um registro de pesquisa em simulação, não uma recomendação de investimento. Use null para entry, stop_loss e take_profit quando não houver justificativa. Confidence deve ser um número entre 0 e 1.' },\n    { role: 'user', content: 'Analise este contexto de mercado do Freqtrade em Português do Brasil. Use o portfólio simulado e as estatísticas anteriores como contexto, sem afirmar desempenho comprovado quando a amostra for pequena.\\nCONTEXTO DE MERCADO:\\n' + JSON.stringify($('Prepare AI Context').first().json.context) + '\\nCONTEXTO DO PAPER TRADING:\\n' + JSON.stringify($('Prepare AI Context').first().json.paperContext) }\n  ]\n}) }}",
         "options": {
           "timeout": 60000
         }
@@ -249,7 +249,7 @@
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "return [{ json: { statusCode: 200, response: $json.response } }];"
+        "jsCode": "const context = $('Prepare AI Context').first().json.context;\nreturn [{ json: { statusCode: 200, response: { ...$json.response, market: context.current, candles: context.candles } } }];"
       },
       "id": "3fa5651b-24ef-42aa-9a73-bab87086a111",
       "name": "Success Response",
