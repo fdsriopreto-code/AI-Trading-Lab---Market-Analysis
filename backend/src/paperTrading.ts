@@ -18,8 +18,7 @@ export const paperConfig = {
   maxDrawdownPct: bounded(process.env.PAPER_MAX_DRAWDOWN_PCT, 0.15, 0.01, 0.9),
   outcomeHorizonCandles: Math.floor(bounded(process.env.PAPER_OUTCOME_HORIZON_CANDLES, 12, 1, 1000)),
   autoAnalyze: process.env.PAPER_AUTO_ANALYZE === 'true',
-  autoTimeframe: /^\d+[mhdw]$/.test(process.env.PAPER_AUTO_TIMEFRAME ?? '') ? process.env.PAPER_AUTO_TIMEFRAME as string : '5m',
-  autoIntervalMinutes: Math.floor(bounded(process.env.PAPER_AUTO_INTERVAL_MINUTES, 5, 5, 1440))
+  autoTimeframe: /^\d+[mhdw]$/.test(process.env.PAPER_AUTO_TIMEFRAME ?? '') ? process.env.PAPER_AUTO_TIMEFRAME as string : '5m'
 };
 
 export type MarketSnapshot = {
@@ -209,6 +208,43 @@ export async function applyPaperDecision(args: {
     client.release();
   }
   return { action, message, portfolio: await portfolioSnapshot() };
+}
+
+export async function refreshPaperMarket(symbol: string, timeframe: string) {
+  const client = await pool.connect();
+  let closed = 0;
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(73190422)');
+    const { rows: positions } = await client.query("SELECT * FROM simulated_trades WHERE status='open' AND symbol=$1 ORDER BY opened_at FOR UPDATE", [symbol]);
+    const { rows: latest } = await client.query('SELECT close,candle_at FROM market_candles WHERE symbol=$1 AND timeframe=$2 ORDER BY candle_at DESC LIMIT 1', [symbol,timeframe]);
+    if (latest[0]) {
+      const mark = number(latest[0].close);
+      for (const trade of positions) {
+        const { rows: trigger } = await client.query(`SELECT candle_at,high,low,close FROM market_candles
+          WHERE symbol=$1 AND timeframe=$2 AND candle_at >= $3
+            AND (($4::numeric IS NOT NULL AND low <= $4) OR ($5::numeric IS NOT NULL AND high >= $5))
+          ORDER BY candle_at ASC LIMIT 1`, [symbol,timeframe,trade.opened_at,trade.stop_loss,trade.take_profit]);
+        if (trigger[0]) {
+          const stopHit = trade.stop_loss !== null && number(trigger[0].low) <= number(trade.stop_loss);
+          const exit = stopHit ? number(trade.stop_loss) : number(trade.take_profit);
+          await closePosition(client,trade,exit,stopHit?'stop_loss':'take_profit');
+          closed += 1;
+        } else {
+          await client.query('UPDATE simulated_trades SET last_price=$2 WHERE id=$1', [trade.id,mark]);
+        }
+      }
+      const { rows: totals } = await client.query(`SELECT p.cash_balance,COALESCE(SUM(t.amount*COALESCE(t.last_price,t.entry)),0) AS market_value
+        FROM paper_portfolio p LEFT JOIN simulated_trades t ON t.status='open' WHERE p.id=1 GROUP BY p.id`);
+      if (totals[0]) {
+        const equity=number(totals[0].cash_balance)+number(totals[0].market_value)*(1-paperConfig.feeRate-paperConfig.slippageRate);
+        await client.query('UPDATE paper_portfolio SET peak_equity=GREATEST(peak_equity,$1),updated_at=now() WHERE id=1',[equity]);
+      }
+    }
+    await client.query('COMMIT');
+  } catch (error) { await client.query('ROLLBACK'); throw error; }
+  finally { client.release(); }
+  return closed;
 }
 
 function timeframeMillis(timeframe: string) {

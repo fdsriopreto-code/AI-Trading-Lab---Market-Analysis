@@ -23,9 +23,14 @@
   }
   const apiService = {
     config: () => request('/api/config'),
+    candles: (symbol,timeframe,limit=100) => request(`/api/market/${encodeURIComponent(symbol.replace('/','-'))}/candles?timeframe=${encodeURIComponent(timeframe)}&limit=${limit}`),
     dashboard: () => request('/api/dashboard'), latest: () => request('/api/ai/decisions/latest'),
     decisions: () => request('/api/ai/decisions'), trades: () => request('/api/trades'), learning: () => request('/api/paper/learning'),
-    health: () => request('/health'), analyze: (symbol, timeframe) => request('/api/ai/analyze', { method: 'POST', body: JSON.stringify({ symbol, timeframe }) }),
+    health: () => request('/health'), markets: () => request('/api/markets'), automation: () => request('/api/automation'),
+    saveAutomation: (body) => request('/api/automation/settings', { method: 'PUT', body: JSON.stringify(body) }),
+    runAutomation: (body = {}) => request('/api/automation/run', { method: 'POST', body: JSON.stringify(body) }),
+    job: (id) => request(`/api/analysis/jobs/${encodeURIComponent(id)}`),
+    analyze: (symbol, timeframe) => request('/api/ai/analyze', { method: 'POST', body: JSON.stringify({ symbol, timeframe }) }),
     analyzeAll: (timeframe) => request('/api/ai/analyze/all', { method: 'POST', body: JSON.stringify({ timeframe }) })
   };
   const services = mode === 'api' ? apiService : mode === 'mock' ? {
@@ -92,6 +97,20 @@
     const analysis = document.getElementById('view-AI Analysis')?.querySelector('.empty');
     if (analysis) { analysis.replaceChildren(); const title = el('b', decision ? `${decision} · ${percent(item.confidence)}` : 'No AI decisions yet'); if (decision) title.className = decision === 'BUY' ? 'positive' : decision === 'SELL' ? 'negative' : 'amber'; analysis.append(title, el('br'), el('br'), el('span', item?.reason || 'No analysis has been recorded.'), el('br'), el('br'), el('span', dateTime(item?.createdAt))); }
   }
+  function renderMarketChart(data){
+    const svg=$('#chart');if(!svg)return;svg.replaceChildren();const rows=data?.candles||[];const placeholder=$('.chart-placeholder');
+    if(!rows.length){if(placeholder){placeholder.textContent=t('No stored market candles yet. Run an AI collection cycle.');placeholder.style.display='flex';}return;}
+    if(placeholder)placeholder.style.display='none';
+    const candles=rows.slice(-60).filter(c=>Number.isFinite(Number(c.close))&&Number.isFinite(Number(c.high))&&Number.isFinite(Number(c.low)));if(!candles.length)return;
+    const width=760,height=225,pad=10,min=Math.min(...candles.map(c=>Number(c.low))),max=Math.max(...candles.map(c=>Number(c.high))),range=max-min||1,step=(width-pad*2)/candles.length,bodyWidth=Math.max(3,Math.min(9,step*.58)),ns='http://www.w3.org/2000/svg';
+    candles.forEach((c,i)=>{const x=pad+i*step+step/2,open=Number(c.open??c.close),close=Number(c.close),high=Number(c.high),low=Number(c.low),y=value=>height-pad-(value-min)/range*(height-pad*2),up=close>=open,color=up?'#56d39b':'#f07878';const wick=document.createElementNS(ns,'line');wick.setAttribute('x1',x);wick.setAttribute('x2',x);wick.setAttribute('y1',y(high));wick.setAttribute('y2',y(low));wick.setAttribute('stroke',color);wick.setAttribute('stroke-width','1.4');svg.appendChild(wick);const rect=document.createElementNS(ns,'rect');rect.setAttribute('x',x-bodyWidth/2);rect.setAttribute('y',Math.min(y(open),y(close)));rect.setAttribute('width',bodyWidth);rect.setAttribute('height',Math.max(1,Math.abs(y(open)-y(close))));rect.setAttribute('rx','1');rect.setAttribute('fill',color);svg.appendChild(rect);});
+    const first=candles[0],last=candles.at(-1),labels=$$('.chart-foot span');if(labels.length){labels.forEach((label,index)=>label.textContent=index===0?new Date(first.date).toLocaleDateString(locale()):index===labels.length-1?new Date(last.date).toLocaleTimeString(locale()):'');}for(const [id,value] of [['chartOpen',last.open],['chartHigh',last.high],['chartLow',last.low],['chartClose',last.close]])setText(`#${id}`,value,money);
+    const marketLabel=$('#chartMarketLabel');if(marketLabel)marketLabel.textContent=`${data.symbol} · ${data.timeframe}`;
+    const points=[['indicatorRsi','rsi',v=>Number(v).toFixed(2)],['indicatorAdx','adx',v=>Number(v).toFixed(2)],['indicatorMfi','mfi',v=>Number(v).toFixed(2)],['indicatorMacd','macd',v=>Number(v).toFixed(4)],['indicatorMacdHist','macdhist',v=>Number(v).toFixed(4)],['indicatorTema','tema',money],['indicatorBollinger','bb_middleband',money],['indicatorVolume','volume',v=>Number(v).toLocaleString(locale())]];
+    for(const [id,key,format] of points){const node=$(`#${id}`);if(node){node.textContent=last[key]==null?'N/A':format(last[key]);node.classList.toggle('na',last[key]==null);}}
+  }
+  function $$(selector,root=document){return [...root.querySelectorAll(selector)];}
+  function renderMarketHistoryTable(data){const body=$('#marketCandlesRows');if(!body||!data)return;body.replaceChildren();const rows=[...(data.candles||[])].slice(-30).reverse();if(!rows.length){const tr=el('tr');const td=el('td',t('No stored market candles yet.'),'row-empty');td.colSpan=7;tr.appendChild(td);body.appendChild(tr);return;}for(const candle of rows){const tr=el('tr');for(const value of [dateTime(candle.date),candle.open,candle.high,candle.low,candle.close,candle.volume,candle.rsi])makeCell(tr,value,'mono');body.appendChild(tr);}}
   function markUnavailable() {
     setText('#price', null); setText('#change24h', null); setText('#openTrades', null); setText('#balance', null);
     setText('#decision', null); setText('#metricDecision', null); setText('#confidence', null); setText('#metricConfidence', null); setText('#reason', null); setText('#decisionTimestamp', null); setText('#decisionEntry', null); setText('#decisionStop', null); setText('#decisionTarget', null);
@@ -111,8 +130,9 @@
       return;
     }
     setSource('CONNECTING'); setState('loading', 'Loading dashboard and activity from API…');
-    const results = await Promise.allSettled([services.dashboard(), services.latest(), services.decisions(), services.trades(), services.health(), services.learning()]);
-    const [dashboard, latest, decisions, trades, health, learning] = results;
+    const results = await Promise.allSettled([services.dashboard(), services.latest(), services.decisions(), services.trades(), services.health(), services.learning(),services.candles(selectedSymbol(),selectedTimeframe())]);
+    const [dashboard, latest, decisions, trades, health, learning,marketCandles] = results;
+    if(marketCandles.status==='fulfilled'){renderMarketChart(marketCandles.value);renderMarketHistoryTable(marketCandles.value);}
     if (dashboard.status === 'fulfilled') {
       const data = dashboard.value; setSource('LIVE DATA', true); setText('#openTrades', data.openTrades);
       setText('#price', data.market?.price, money); setText('#change24h', data.market?.change24h, v => `${v >= 0 ? '+' : ''}${(v * 100).toFixed(2)}%`);
@@ -140,18 +160,51 @@
     $('#breadcrumb').textContent = page; $('#sidebar').classList.remove('open'); window.scrollTo({ top: 0, behavior: 'smooth' });
   }));
   $('#menu').onclick = () => $('#sidebar').classList.toggle('open');
-  document.querySelectorAll('#timeframes button').forEach(button => button.addEventListener('click', () => { document.querySelectorAll('#timeframes button').forEach(item => item.classList.remove('selected')); button.classList.add('selected'); }));
+  $('#marketSymbol')?.addEventListener('change',()=>{if(mode==='api')loadData();});
+  document.querySelectorAll('#timeframes button').forEach(button => button.addEventListener('click', () => { document.querySelectorAll('#timeframes button').forEach(item => item.classList.remove('selected')); button.classList.add('selected');if(mode==='api')loadData(); }));
   let toastTimer; function toast(message) { const node = $('#toast'); node.textContent = message; node.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => node.classList.remove('show'), 3500); }
   $('#refresh').onclick = async event => { const button = event.currentTarget; button.disabled = true; button.textContent = '↻  Loading…'; await loadData(); button.disabled = false; button.textContent = '↻  Refresh'; };
+  function renderQueue(snapshot) {
+    if (!snapshot) return;
+    for (const status of ['pending','processing','completed','failed']) setText(`#queue${status[0].toUpperCase()+status.slice(1)}`, snapshot.counts?.[status] ?? 0);
+    const settings=snapshot.settings||{};
+    const badgeNode=$('#automationBadge'); if(badgeNode){badgeNode.textContent=settings.enabled?'SCHEDULE ACTIVE':'PAUSED';badgeNode.className=settings.enabled?'badge buy':'dry';}
+    const status=$('#automationStatus'); if(status) status.textContent=settings.enabled?t('Next scan every {hours}h · {timeframe} · {days}d lookback',{hours:(settings.intervalMinutes/60).toLocaleString(locale()),timeframe:settings.timeframe,days:settings.historyDays}):t('Schedule paused · manual AI jobs remain available.');
+    const last=$('#automationLastRun'); if(last) last.textContent=settings.lastEnqueuedAt?t('Last scheduled queue run: {date}',{date:dateTime(settings.lastEnqueuedAt)}):t('No scheduled cycle has run yet. Historical market data is stored before AI analysis.');
+    const table=$('#analysisQueueRows'); if(table){table.replaceChildren();if(!snapshot.jobs?.length){const tr=el('tr');const td=el('td',t('No queued analyses yet.'),'row-empty');td.colSpan=7;tr.appendChild(td);table.appendChild(tr);}else for(const job of snapshot.jobs){const tr=el('tr');makeCell(tr,dateTime(job.createdAt),'mono');makeCell(tr,job.symbol);makeCell(tr,`${job.timeframe} · ${job.historyDays}d`,'mono');const s=el('td',t(job.status.toUpperCase()),`queue-status ${job.status}`);tr.appendChild(s);const decision=el('td');if(job.decision)decision.appendChild(badge(job.decision));else decision.textContent='—';tr.appendChild(decision);makeCell(tr,job.attempts,'mono');makeCell(tr,job.reason||job.error||job.paper_action||t(job.source),'queue-detail');table.appendChild(tr);}}
+    const svc=snapshot.services||{};
+    const setService=(selector,value)=>{const node=$(selector);if(node){node.textContent=String(value||'unknown').replaceAll('_',' ').toUpperCase();node.className=['online','configured'].includes(value)?'positive':['offline','error','not_configured'].includes(value)?'negative':'';}};
+    setService('#queueFreqtradeStatus',svc.freqtrade?.status);setService('#queueAiStatus',svc.ai);setService('#queueDbStatus','online');
+    const collector=$('#queueCollectorStatus');if(collector)collector.textContent=snapshot.counts?.processing?'BUSY':'READY';
+  }
+  let availableMarkets=[];
   async function loadMarketConfig() {
     if (mode !== 'api') return;
-    try { const config = await services.config(); for (const select of [$('#marketSymbol'), $('#view-Settings select')].filter(Boolean)) { select.replaceChildren(); for (const symbol of config.symbols || []) { const option=el('option',symbol); option.value=symbol; select.appendChild(option); } } const auto=config.paperSettings?.autoAnalyze; const status=$('#marketStatus'); if(status) status.textContent=t('Markets from allowlist: {count}. Scheduled scan: {status} ({timeframe}, every {minutes} min).',{count:(config.symbols||[]).length,status:auto?'ON':'OFF',timeframe:config.paperSettings?.autoTimeframe||'5m',minutes:config.paperSettings?.autoIntervalMinutes||5}); }
-    catch (error) { setState('error', t('Could not load configured markets: {error}',{error:error.message})); }
+    try {
+      const [config,markets,automation]=await Promise.all([services.config(),services.markets(),services.automation()]);
+      availableMarkets=markets.symbols?.length?markets.symbols:(config.defaultSymbols||config.symbols||[]);
+      const marketSelect=$('#marketSymbol');if(marketSelect){marketSelect.replaceChildren();for(const symbol of availableMarkets){const option=el('option',symbol);option.value=symbol;marketSelect.appendChild(option);}if(config.automation?.symbols?.[0])marketSelect.value=config.automation.symbols[0];}
+      const list=$('#automationMarkets');if(list){list.replaceChildren();for(const symbol of availableMarkets){const label=el('label',undefined,'market-option');const input=document.createElement('input');input.type='checkbox';input.name='automationMarket';input.value=symbol;input.checked=(config.automation?.symbols||config.defaultSymbols||[]).includes(symbol);label.append(input,el('span',symbol));list.appendChild(label);}}
+      const current=config.automation||{};const enabled=$('#automationEnabled');if(enabled)enabled.checked=!!current.enabled;
+      const timeframe=$('#automationTimeframe');if(timeframe)timeframe.value=current.timeframe||'5m';
+      const interval=$('#automationInterval');if(interval)interval.value=String(current.intervalMinutes||240);
+      const history=$('#automationHistory');if(history)history.value=String(current.historyDays||90);
+      renderQueue(automation);
+      const marketStatus=$('#marketStatus');if(marketStatus)marketStatus.textContent=t('Backend market feed: {source}. {count} pairs available. Data is saved to PostgreSQL before the AI receives its job.',{source:markets.source||'Freqtrade',count:availableMarkets.length});
+    } catch (error) { setState('error', t('Could not load configured markets: {error}',{error:error.message})); }
   }
+  async function refreshAutomation(){if(mode!=='api')return;try{renderQueue(await services.automation());}catch(error){setState('error',error.message||t('Queue refresh failed.'));}}
+  const pause=(ms)=>new Promise(resolve=>setTimeout(resolve,ms));
+  async function waitForJob(id, timeoutMs=110000){const end=Date.now()+timeoutMs;while(Date.now()<end){const job=await services.job(id);if(job.status==='completed'||job.status==='failed')return job;await pause(2500);}return null;}
+  async function renderJobResult(job){if(!job){setState('loading',t('The job is still running. Follow its progress in the Automation queue.'));await refreshAutomation();return;}await loadData();await refreshAutomation();if(job.status==='failed'){const message=job.error||t('Analysis job failed.');setState('error',message);toast(message);}else toast(t('AI decided {decision} for {symbol}.',{decision:job.decision||'HOLD',symbol:job.symbol}));}
+  $('#saveAutomation')?.addEventListener('click',async event=>{const button=event.currentTarget;button.disabled=true;try{const symbols=[...document.querySelectorAll('input[name="automationMarket"]:checked')].map(input=>input.value);if(!symbols.length)throw new Error(t('Select at least one market.'));const settings={enabled:$('#automationEnabled').checked,symbols,timeframe:$('#automationTimeframe').value,intervalMinutes:Number($('#automationInterval').value),historyDays:Number($('#automationHistory').value)};await services.saveAutomation(settings);await loadMarketConfig();toast(t('Automation settings saved.'));}catch(error){toast(error.message||t('Could not save automation settings.'));}finally{button.disabled=false;}});
+  $('#runAutomation')?.addEventListener('click',async event=>{const button=event.currentTarget;button.disabled=true;try{const symbols=[...document.querySelectorAll('input[name="automationMarket"]:checked')].map(input=>input.value);if(!symbols.length)throw new Error(t('Select at least one market.'));const result=await services.runAutomation({symbols,timeframe:$('#automationTimeframe').value,historyDays:Number($('#automationHistory').value)});toast(t('Queued {count} AI analysis job(s).',{count:result.accepted}));await refreshAutomation();}catch(error){toast(error.message||t('Could not start the analysis queue.'));}finally{button.disabled=false;}});
+  $('#automationRefresh')?.addEventListener('click',refreshAutomation);
+  setInterval(()=>{if($('#view-Automation')?.classList.contains('active'))refreshAutomation();},12000);
   $('#analyzeAll')?.addEventListener('click', async event => {
     if (mode !== 'api') { toast('Configure the backend API before requesting analysis.'); return; }
     const button=event.currentTarget; button.disabled=true; button.textContent=t('Analyzing all…');
-    try { const result=await services.analyzeAll(selectedTimeframe()); const succeeded=result.results.filter(item=>item.ok).length; toast(t('Paper analysis completed for {succeeded}/{total} markets.',{succeeded,total:result.results.length})); await loadData(); }
+    try { const result=await services.analyzeAll(selectedTimeframe()); toast(t('Queued {count} AI analysis job(s).',{count:result.accepted})); await refreshAutomation(); }
     catch(error) { setState('error',error.message||t('Batch analysis failed.')); toast(error.message||t('Batch analysis failed.')); }
     finally { button.disabled=false; button.textContent=t('Analyze all'); }
   });
@@ -161,7 +214,9 @@
     setState('loading', t('Analyzing {symbol} on {timeframe}…', { symbol: selectedSymbol(), timeframe: selectedTimeframe() }));
     try {
       const result = await services.analyze(selectedSymbol(), selectedTimeframe());
-      renderLatest(result); await loadData(); toast(t(result.paperMessage || 'Analysis recorded by the backend.'));
+      if(!result.jobs?.length){toast(t('This market already has a job in the queue.'));await refreshAutomation();return;}
+      toast(t('Market data collection and AI analysis added to the queue.'));
+      const completed=await waitForJob(result.jobs[0].id);await renderJobResult(completed);
     } catch (error) { setState('error', error.message || 'Analysis request failed.'); toast(error.message || 'Analysis request failed.'); }
     finally { buttons.forEach(item => { item.disabled = false; item.innerHTML = item.id === 'analyze' ? '✳ &nbsp;Analyze now' : '✳ &nbsp;Analyze selected'; }); }
   }));

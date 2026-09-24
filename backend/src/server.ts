@@ -4,7 +4,9 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import { z } from 'zod';
 import { pool } from './db.js';
-import { applyPaperDecision, evaluateDecisionOutcomes, initializePaperPortfolio, learningSummary, paperConfig, portfolioSnapshot, type MarketSnapshot } from './paperTrading.js';
+import { initializePaperPortfolio, learningSummary, paperConfig, portfolioSnapshot } from './paperTrading.js';
+import { enqueueAnalysis, enqueueScheduledAnalysis, getAnalysisSettings, getJob, initializeAnalysisQueue, processNextAnalysisJob, queueSnapshot, saveAnalysisSettings } from './analysisQueue.js';
+import { freqtradeHealth, freqtradeMarkets } from './freqtrade.js';
 
 const app = Fastify({ logger: true, bodyLimit: 1_000_000 });
 await app.register(cors, { origin: process.env.FRONTEND_ORIGIN ? [process.env.FRONTEND_ORIGIN] : false });
@@ -40,17 +42,6 @@ const AnalyzeRequest = z.object({
   symbol: z.string().regex(/^[A-Z0-9]+\/[A-Z0-9]+$/, 'Expected a pair such as BTC/USDT'),
   timeframe: z.string().regex(/^\d+[mhdw]$/, 'Expected timeframe such as 5m')
 }).strict();
-const N8nResponse = z.object({
-  decision: decisionName,
-  confidence: z.number().min(0).max(1),
-  entry: z.number().finite().nullable(),
-  stop_loss: z.number().finite().nullable(),
-  take_profit: z.number().finite().nullable(),
-  reason: z.string(),
-  market: z.object({ price: z.number().positive().nullable(), high: z.number().nullable().optional(), low: z.number().nullable().optional(), date: z.union([z.string(), z.number()]).nullable().optional() }).passthrough().nullable().optional(),
-  candles: z.array(z.unknown()).optional()
-}).strict();
-
 function nullableNumber(value: unknown): number | null { return value === null || value === undefined ? null : Number(value); }
 function mapDecision(row: any) {
   return DecisionResponse.parse({ id: String(row.id), symbol: row.symbol, timeframe: row.timeframe, decision: row.decision,
@@ -73,20 +64,24 @@ app.setErrorHandler((error, _request, reply) => {
 });
 
 app.get('/health', async (_request, reply) => {
-  try { await pool.query('SELECT 1'); return { api: 'ok', database: 'ok' }; }
+  try { await pool.query('SELECT 1'); return { api: 'ok', database: 'ok', freqtrade: await freqtradeHealth() }; }
   catch (error) { app.log.error({ err: error }, 'PostgreSQL health check failed'); return reply.code(503).send({ api: 'ok', database: 'unavailable' }); }
 });
-app.get('/api/config', async () => ({ symbols: paperConfig.symbols, timeframes: ['5m','15m','1h','4h'], mode: 'DRY_RUN', paperSettings: {
-  initialBalance: paperConfig.startingBalance, maxTradePct: paperConfig.maxTradePct, maxExposurePct: paperConfig.maxExposurePct,
-  maxOpenTrades: paperConfig.maxOpenTrades, feeRate: paperConfig.feeRate, slippageRate: paperConfig.slippageRate, maxDrawdownPct: paperConfig.maxDrawdownPct,
-  autoAnalyze: paperConfig.autoAnalyze, autoTimeframe: paperConfig.autoTimeframe, autoIntervalMinutes: paperConfig.autoIntervalMinutes
-} }));
+app.get('/api/config', async () => {
+  const [settings, freqtrade] = await Promise.all([getAnalysisSettings(),freqtradeHealth()]);
+  return { symbols: settings.symbols, defaultSymbols: paperConfig.symbols, timeframes: ['5m','15m','30m','1h','4h','1d'], historyDayOptions: [30,60,90,180], mode: 'DRY_RUN', automation: settings, paperSettings: {
+    initialBalance: paperConfig.startingBalance, maxTradePct: paperConfig.maxTradePct, maxExposurePct: paperConfig.maxExposurePct,
+    maxOpenTrades: paperConfig.maxOpenTrades, feeRate: paperConfig.feeRate, slippageRate: paperConfig.slippageRate, maxDrawdownPct: paperConfig.maxDrawdownPct
+  }, services: { freqtrade, n8n: process.env.N8N_ANALYZE_WEBHOOK_URL ? 'configured' : 'not_configured' } };
+});
 app.get('/api/dashboard', async () => {
-  const [{ rows: latest }, portfolio] = await Promise.all([
-    pool.query('SELECT * FROM ai_decisions ORDER BY created_at DESC LIMIT 1'), portfolioSnapshot()
+  const [{ rows: latest }, { rows: latestMarket }, portfolio] = await Promise.all([
+    pool.query('SELECT * FROM ai_decisions ORDER BY created_at DESC LIMIT 1'),
+    pool.query('SELECT symbol,close,candle_at FROM market_candles ORDER BY candle_at DESC LIMIT 1'),
+    portfolioSnapshot()
   ]);
   return DashboardResponse.parse({ mode: 'DRY_RUN', latestDecision: latest[0] ? mapDecision(latest[0]) : null,
-    openTrades: portfolio.openPositions, market: latest[0] ? { symbol: latest[0].symbol, price: nullableNumber(latest[0].price), change24h: null } : null,
+    openTrades: portfolio.openPositions, market: latestMarket[0] ? { symbol: latestMarket[0].symbol, price: nullableNumber(latestMarket[0].close), change24h: null } : null,
     balance: { total: portfolio.equity, currency: portfolio.currency }, portfolio });
 });
 app.get('/api/paper/portfolio', async () => portfolioSnapshot());
@@ -103,7 +98,32 @@ app.get('/api/paper/learning/dataset', async (request) => {
     ORDER BY o.evaluated_at DESC LIMIT $3`, [query.symbol ?? null, query.timeframe ?? null, query.limit]);
   return { featureSet: 'ai_decisions.indicators', target: 'decision_outcomes.label', caution: 'Exploratory historical labels; validate out-of-sample before training or deployment.', samples: rows };
 });
-app.get('/api/markets', async () => ({ symbols: paperConfig.symbols, source: 'PAPER_ALLOWLIST' }));
+app.get('/api/markets', async () => {
+  const settings=await getAnalysisSettings();
+  try { return { symbols: [...new Set([...await freqtradeMarkets(settings.timeframe),...paperConfig.symbols,...settings.symbols])], source: 'FREQTRADE_AVAILABLE_PAIRS' }; }
+  catch { return { symbols: [...new Set([...paperConfig.symbols,...settings.symbols])], source: 'PAPER_DEFAULTS' }; }
+});
+app.get('/api/automation', async () => ({ ...(await queueSnapshot()), services: { freqtrade: await freqtradeHealth(), ai: process.env.N8N_ANALYZE_WEBHOOK_URL ? 'configured' : 'not_configured' } }));
+app.put('/api/automation/settings', async (request) => {
+  const input = z.object({ enabled: z.boolean(), symbols: z.array(z.string()).min(1).max(20), timeframe: z.string().regex(/^\d+[mhdw]$/), intervalMinutes: z.number().int().min(30).max(10080), historyDays: z.number().int().min(7).max(180) }).strict().parse(request.body);
+  return saveAnalysisSettings(input);
+});
+app.get('/api/analysis/jobs', async (request) => {
+  const { limit = 30 } = z.object({ limit: z.coerce.number().int().min(1).max(100).default(30) }).parse(request.query);
+  return queueSnapshot(limit);
+});
+app.get('/api/analysis/jobs/:id', async (request, reply) => {
+  const { id } = z.object({ id: z.string().regex(/^\d+$/) }).parse(request.params);
+  const job = await getJob(id);
+  return job ?? reply.code(404).send({ error: 'Analysis job not found.' });
+});
+app.post('/api/automation/run', async (request, reply) => {
+  const settings = await getAnalysisSettings();
+  const body = z.object({ symbols: z.array(z.string().regex(/^[A-Z0-9]+\/[A-Z0-9]+$/)).min(1).max(20).optional(), timeframe: z.string().regex(/^\d+[mhdw]$/).optional(), historyDays: z.number().int().min(7).max(180).optional() }).strict().parse(request.body ?? {});
+  const symbols = body.symbols ?? settings.symbols;
+  const jobs = await enqueueAnalysis(symbols,body.timeframe ?? settings.timeframe,body.historyDays ?? settings.historyDays,'manual');
+  return reply.code(202).send({ accepted: jobs.length, skippedAsAlreadyQueued: symbols.length-jobs.length, jobs });
+});
 app.get('/api/ai/decisions/latest', async () => {
   const { rows } = await pool.query('SELECT * FROM ai_decisions ORDER BY created_at DESC LIMIT 1');
   return rows[0] ? mapDecision(rows[0]) : null;
@@ -116,86 +136,55 @@ app.get('/api/ai/decisions', async (request) => {
 app.get('/api/trades', async () => (await pool.query('SELECT * FROM simulated_trades ORDER BY created_at DESC LIMIT 200')).rows.map(mapTrade));
 app.get('/api/market/:symbol', async (request, reply) => {
   const { symbol } = z.object({ symbol: z.string().regex(/^[A-Za-z0-9/-]{3,30}$/) }).parse(request.params);
-  const { rows } = await pool.query('SELECT symbol,price,created_at FROM ai_decisions WHERE symbol=$1 AND price IS NOT NULL ORDER BY created_at DESC LIMIT 1', [symbol.replace('-', '/')]);
+  const { rows } = await pool.query('SELECT symbol,close,candle_at FROM market_candles WHERE symbol=$1 ORDER BY candle_at DESC LIMIT 1', [symbol.replace('-', '/')]);
   if (!rows[0]) return reply.code(404).send({ error: 'No market snapshot has been recorded for this symbol yet.', symbol });
-  return { symbol: rows[0].symbol, price: nullableNumber(rows[0].price), recordedAt: new Date(rows[0].created_at).toISOString(), source: 'LAST_ANALYSIS_SNAPSHOT' };
+  return { symbol: rows[0].symbol, price: nullableNumber(rows[0].close), recordedAt: new Date(rows[0].candle_at).toISOString(), source: 'FREQTRADE_POSTGRES_HISTORY' };
 });
 app.get('/api/market/:symbol/candles', async (request, reply) => {
   const { symbol } = z.object({ symbol: z.string().regex(/^[A-Za-z0-9/-]{3,30}$/) }).parse(request.params);
   const { timeframe = '5m', limit = 100 } = z.object({ timeframe: z.string().regex(/^\d+[mhdw]$/).default('5m'), limit: z.coerce.number().int().min(1).max(500).default(100) }).parse(request.query);
-  const { rows } = await pool.query('SELECT candles,created_at FROM ai_decisions WHERE symbol=$1 AND timeframe=$2 AND jsonb_array_length(candles)>0 ORDER BY created_at DESC LIMIT 1', [symbol.replace('-', '/'), timeframe]);
+  const { rows } = await pool.query('SELECT candle_at,open,high,low,close,volume,indicators FROM market_candles WHERE symbol=$1 AND timeframe=$2 ORDER BY candle_at DESC LIMIT $3', [symbol.replace('-', '/'), timeframe, limit]);
   if (!rows[0]) return reply.code(404).send({ error: 'No candle snapshot has been recorded for this market yet.' });
-  return { symbol: symbol.replace('-', '/'), timeframe, candles: (rows[0].candles as unknown[]).slice(-limit), recordedAt: new Date(rows[0].created_at).toISOString(), source: 'LAST_ANALYSIS_SNAPSHOT' };
+  return { symbol: symbol.replace('-', '/'), timeframe, candles: rows.reverse().map((row) => ({ date: new Date(row.candle_at).toISOString(), open: nullableNumber(row.open), high: nullableNumber(row.high), low: nullableNumber(row.low), close: nullableNumber(row.close), volume: nullableNumber(row.volume), ...(row.indicators ?? {}) })), recordedAt: new Date(rows.at(-1).candle_at).toISOString(), source: 'FREQTRADE_POSTGRES_HISTORY' };
 });
-
-async function runAnalysis(input: z.infer<typeof AnalyzeRequest>) {
-  if (!paperConfig.symbols.includes(input.symbol)) throw new Error(`Symbol ${input.symbol} is not enabled in PAPER_SYMBOLS.`);
-  const webhook = process.env.N8N_ANALYZE_WEBHOOK_URL;
-  if (!webhook) throw new Error('Analysis workflow is not configured.');
-  const [portfolio, performance] = await Promise.all([portfolioSnapshot(), learningSummary(input.symbol, input.timeframe)]);
-  const headers: Record<string, string> = { 'content-type': 'application/json' };
-  if (process.env.N8N_WEBHOOK_TOKEN) headers.authorization = `Bearer ${process.env.N8N_WEBHOOK_TOKEN}`;
-  const response = await fetch(webhook, { method: 'POST', headers,
-    body: JSON.stringify({ ...input, mode: 'DRY_RUN', paper_context: { portfolio, performance } }), signal: AbortSignal.timeout(120_000) });
-  if (!response.ok) throw new Error(`n8n returned HTTP ${response.status}`);
-  const raw: unknown = await response.json();
-  const result = N8nResponse.parse(raw);
-  const market = result.market as MarketSnapshot | null | undefined;
-  const price = market?.price ?? null;
-  const { rows } = await pool.query(`INSERT INTO ai_decisions(symbol,timeframe,decision,confidence,price,entry,stop_loss,take_profit,reason,indicators,candles,raw_response)
-    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,$12::jsonb) RETURNING *`,
-    [input.symbol,input.timeframe,result.decision,result.confidence,price,result.entry,result.stop_loss,result.take_profit,result.reason,
-      JSON.stringify(market ?? {}), JSON.stringify(result.candles ?? []), JSON.stringify(raw)]);
-  const inserted = rows[0];
-  await evaluateDecisionOutcomes(input.symbol, input.timeframe, result.candles ?? []);
-  const paper = await applyPaperDecision({ decisionId: String(inserted.id), symbol: input.symbol, decision: result.decision,
-    entry: result.entry, stopLoss: result.stop_loss, takeProfit: result.take_profit, market: market ?? null });
-  const { rows: saved } = await pool.query('SELECT * FROM ai_decisions WHERE id=$1', [inserted.id]);
-  return { ...mapDecision(saved[0]), paper: { action: paper.action, message: paper.message, portfolio: paper.portfolio } };
-}
 
 app.post('/api/ai/analyze', async (request, reply) => {
   const input = AnalyzeRequest.parse(request.body);
-  try { return reply.code(201).send(await runAnalysis(input)); }
-  catch (error) {
-    const failure = error instanceof z.ZodError
-      ? { type: 'InvalidN8nResponse', issues: error.issues.map(({ path, message }) => ({ path, message })) }
-      : { type: error instanceof Error ? error.name : 'UnknownError', httpStatus: error instanceof Error && /^n8n returned HTTP \d+$/.test(error.message) ? error.message.slice(-3) : undefined };
-    app.log.error({ failure, symbol: input.symbol, timeframe: input.timeframe }, 'n8n analysis failed or returned an invalid response');
-    return reply.code(error instanceof Error && error.message.includes('not enabled') ? 400 : error instanceof Error && error.message.includes('not configured') ? 503 : 502)
-      .send({ error: error instanceof Error && error.message.includes('not enabled') ? error.message : 'Analysis workflow failed or returned an invalid response' });
-  }
+  const settings = await getAnalysisSettings();
+  const jobs = await enqueueAnalysis([input.symbol],input.timeframe,settings.historyDays,'manual');
+  return reply.code(202).send({ accepted: jobs.length, jobs });
 });
 
 app.post('/api/ai/analyze/all', async (request, reply) => {
   const input = z.object({ timeframe: z.string().regex(/^\d+[mhdw]$/) }).strict().parse(request.body);
-  if (!paperConfig.symbols.length) return reply.code(503).send({ error: 'No paper markets are configured.' });
-  const results: { symbol: string; ok: boolean; result?: unknown; error?: string }[] = [];
-  for (const symbol of paperConfig.symbols) {
-    try { results.push({ symbol, ok: true, result: await runAnalysis({ symbol, timeframe: input.timeframe }) }); }
-    catch { results.push({ symbol, ok: false, error: 'Analysis failed for this market.' }); }
-  }
-  return reply.code(results.some((result) => result.ok) ? 200 : 502).send({ mode: 'DRY_RUN', results, portfolio: await portfolioSnapshot() });
+  const settings = await getAnalysisSettings();
+  const jobs = await enqueueAnalysis(settings.symbols,input.timeframe,settings.historyDays,'manual');
+  return reply.code(202).send({ accepted: jobs.length, skippedAsAlreadyQueued: settings.symbols.length-jobs.length, jobs });
 });
 
 const port = Number(process.env.PORT ?? 3000);
 await initializePaperPortfolio();
+await initializeAnalysisQueue();
 await app.listen({ port, host: process.env.HOST ?? '0.0.0.0' });
-if (paperConfig.autoAnalyze && process.env.N8N_ANALYZE_WEBHOOK_URL) {
-  let scanInProgress = false;
-  const timer = setInterval(async () => {
-    if (scanInProgress) return;
-    scanInProgress = true;
-    try {
-      const outcomes: { symbol: string; ok: boolean }[] = [];
-      for (const symbol of paperConfig.symbols) {
-        try { await runAnalysis({ symbol, timeframe: paperConfig.autoTimeframe }); outcomes.push({ symbol, ok: true }); }
-        catch (error) { app.log.warn({ symbol, errorType: error instanceof Error ? error.name : 'UnknownError' }, 'Scheduled paper analysis failed'); outcomes.push({ symbol, ok: false }); }
-      }
-      app.log.info({ completed: outcomes.filter((item) => item.ok).length, markets: outcomes.length }, 'Scheduled paper scan completed');
-    } finally { scanInProgress = false; }
-  }, paperConfig.autoIntervalMinutes * 60_000);
-  timer.unref();
-  app.log.info({ timeframe: paperConfig.autoTimeframe, intervalMinutes: paperConfig.autoIntervalMinutes, markets: paperConfig.symbols.length }, 'Scheduled paper analysis enabled');
+const queueTimers: NodeJS.Timeout[] = [];
+const workerCount = Math.max(1,Math.min(4,Number.parseInt(process.env.ANALYSIS_WORKER_CONCURRENCY ?? '2',10)||2));
+for (let worker=0;worker<workerCount;worker++) {
+  let running=false;
+  const timer=setInterval(async()=>{
+    if(running)return;
+    running=true;
+    try{await processNextAnalysisJob();}
+    catch(error){app.log.error({worker,errorType:error instanceof Error?error.name:'UnknownError'},'Analysis queue worker tick failed');}
+    finally{running=false;}
+  },1_500);
+  timer.unref();queueTimers.push(timer);
 }
-for (const signal of ['SIGINT', 'SIGTERM'] as const) process.on(signal, async () => { await app.close(); await pool.end(); process.exit(0); });
+const scheduleTimer = setInterval(async () => {
+  try {
+    const enqueued = await enqueueScheduledAnalysis();
+    if (enqueued) app.log.info({ enqueued }, 'Scheduled market analysis jobs added to queue');
+  } catch (error) { app.log.error({ errorType: error instanceof Error ? error.name : 'UnknownError' }, 'Analysis scheduler tick failed'); }
+}, 15_000);
+scheduleTimer.unref();
+app.log.info({ markets: paperConfig.symbols.length, workers: workerCount, worker: 'postgres-backed' }, 'Persistent analysis queue started');
+for (const signal of ['SIGINT', 'SIGTERM'] as const) process.on(signal, async () => { for(const timer of [...queueTimers,scheduleTimer])clearInterval(timer);await app.close(); await pool.end(); process.exit(0); });

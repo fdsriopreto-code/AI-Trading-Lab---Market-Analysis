@@ -90,7 +90,31 @@
     'SELL signal recorded; no simulated long position was open. Short positions are disabled.': 'Sinal SELL registrado; não havia posição comprada simulada aberta. Posições vendidas estão desativadas.',
     'A simulated position for this symbol is already open; no duplicate entry was added.': 'Já existe uma posição simulada aberta neste ativo; nenhuma entrada duplicada foi criada.',
     'Simulated position closed by stop loss.': 'Posição simulada fechada pelo stop loss.',
-    'Simulated position closed by take profit.': 'Posição simulada fechada pelo take profit.'
+    'Simulated position closed by take profit.': 'Posição simulada fechada pelo take profit.',
+    'Automation': 'Automação', 'AI Control Center': 'Central de Controle da IA', 'AUTONOMOUS PAPER LAB': 'LABORATÓRIO AUTÔNOMO SIMULADO',
+    'The backend collects market data, queues analysis, and lets the AI decide BUY, SELL, or HOLD.': 'O backend coleta os dados, enfileira análises e deixa a IA decidir BUY, SELL ou HOLD.',
+    'Refresh queue': 'Atualizar fila', 'Waiting': 'Aguardando', 'In progress': 'Em andamento', 'Completed': 'Concluídas', 'Needs attention': 'Precisam de atenção',
+    'PENDING JOBS': 'TAREFAS PENDENTES', 'AI WORKER': 'WORKER DA IA', 'LAST 30 DAYS': 'ÚLTIMOS 30 DIAS', 'FAILED JOBS': 'TAREFAS COM FALHA',
+    'Autonomous cycle': 'Ciclo autônomo', 'Loading persisted schedule…': 'Carregando agendamento salvo…', 'PAUSED': 'PAUSADO', 'SCHEDULE ACTIVE': 'AGENDAMENTO ATIVO',
+    'Enable scheduled AI decisions': 'Ativar decisões agendadas da IA', 'When active, each cycle fetches Freqtrade history, saves it to PostgreSQL, then queues the AI.': 'Quando ativo, cada ciclo busca o histórico do Freqtrade, salva no PostgreSQL e então enfileira a IA.',
+    'Markets to monitor': 'Mercados para monitorar', 'Market timeframe': 'Período do mercado', 'Run every': 'Executar a cada', 'Historical lookback': 'Histórico para análise',
+    '1 hour': '1 hora', '2 hours': '2 horas', '4 hours': '4 horas', '6 hours': '6 horas', '12 hours': '12 horas', '24 hours': '24 horas',
+    '30 days': '30 dias', '60 days': '60 dias', '90 days': '90 dias', '180 days': '180 dias', '365 days': '365 dias',
+    'Save schedule': 'Salvar agendamento', 'Collect + run AI now': 'Coletar + executar IA agora', 'Paper simulation only. The backend applies portfolio limits; it never submits exchange orders. AI usage depends on how often the schedule runs.': 'Somente simulação. O backend aplica limites de carteira e nunca envia ordens à exchange. O uso da IA depende da frequência do agendamento.',
+    'Pipeline status': 'Status do pipeline', 'Checking': 'Verificando', 'Collector': 'Coletor', 'History is pulled by the backend and stored before each AI job.': 'O backend coleta e salva o histórico antes de cada análise da IA.',
+    'Last scheduled queue run: {date}': 'Último ciclo agendado na fila: {date}', 'No scheduled cycle has run yet. Historical market data is stored before AI analysis.': 'Nenhum ciclo agendado foi executado ainda. O histórico é salvo antes da análise da IA.',
+    'Next scan every {hours}h · {timeframe} · {days}d lookback': 'Próxima análise em {hours}h · {timeframe} · histórico de {days}d', 'Schedule paused · manual AI jobs remain available.': 'Agendamento pausado · análises manuais continuam disponíveis.',
+    'Backend market feed: {source}. {count} pairs available. Data is saved to PostgreSQL before the AI receives its job.': 'Fonte do mercado no backend: {source}. {count} pares disponíveis. Os dados são salvos no PostgreSQL antes de chegarem à IA.',
+    'Analysis queue': 'Fila de análises', 'MARKET COLLECTION → AI DECISION → PAPER LEDGER': 'COLETA DE MERCADO → DECISÃO DA IA → CARTEIRA SIMULADA',
+    'CREATED': 'CRIADA', 'PERIOD': 'PERÍODO', 'ATTEMPTS': 'TENTATIVAS', 'PENDING': 'PENDENTE', 'PROCESSING': 'PROCESSANDO', 'COMPLETED': 'CONCLUÍDA', 'FAILED': 'FALHOU',
+    'No queued analyses yet.': 'Ainda não há análises na fila.', 'The job is still running. Follow its progress in the Automation queue.': 'A tarefa continua em andamento. Acompanhe o progresso na fila de automação.',
+    'This market already has a job in the queue.': 'Este mercado já tem uma tarefa na fila.', 'Market data collection and AI analysis added to the queue.': 'A coleta do mercado e a análise da IA foram adicionadas à fila.',
+    'Queued {count} AI analysis job(s).': '{count} análise(s) da IA adicionada(s) à fila.', 'AI decided {decision} for {symbol}.': 'A IA decidiu {decision} para {symbol}.',
+    'Automation settings saved.': 'Configurações da automação salvas.', 'Could not save automation settings.': 'Não foi possível salvar a automação.',
+    'Queue refresh failed.': 'Falha ao atualizar a fila.', 'Could not start the analysis queue.': 'Não foi possível iniciar a fila de análise.', 'Select at least one market.': 'Selecione pelo menos um mercado.', 'Analysis job failed.': 'A análise falhou.',
+    'No stored market candles yet.': 'Ainda não há candles de mercado salvos.',
+    'No stored market candles yet. Run an AI collection cycle.': 'Ainda não há candles salvos. Execute um ciclo de coleta da IA.',
+    'Backend market feed: {source}. {count} pairs available. Data is saved to PostgreSQL before the AI receives its job.': 'Fonte de mercado do backend: {source}. {count} pares disponíveis. Os dados são salvos no PostgreSQL antes de chegarem à IA.'
   };
   const ptToEn = Object.fromEntries(Object.entries(enToPt).map(([en, pt]) => [pt, en]));
   const storageKey = 'ai-trading-lab-language';
