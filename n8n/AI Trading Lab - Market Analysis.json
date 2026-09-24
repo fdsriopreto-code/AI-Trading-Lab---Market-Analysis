@@ -21,7 +21,7 @@
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const body = $json.body ?? $json;\nconst symbol = body?.symbol;\nconst timeframe = body?.timeframe;\nconst mode = body?.mode;\nconst pairOk = typeof symbol === 'string' && /^[A-Z0-9]+\\/[A-Z0-9]+$/.test(symbol);\nconst timeframeOk = typeof timeframe === 'string' && /^\\d+[mhdw]$/.test(timeframe);\nif (!pairOk || !timeframeOk || mode !== 'DRY_RUN') {\n  return [{ json: { ok: false, statusCode: 400, error: { code: 'INVALID_INPUT', message: 'symbol and timeframe are required; mode must be DRY_RUN.' } } }];\n}\nconst paperContext = body?.paper_context && typeof body.paper_context === 'object' ? body.paper_context : null;\nreturn [{ json: { ok: true, symbol, timeframe, mode: 'DRY_RUN', paperContext } }];"
+        "jsCode": "const body = $json.body ?? $json;\nconst symbol = body?.symbol;\nconst timeframe = body?.timeframe;\nconst mode = body?.mode;\nconst pairOk = typeof symbol === 'string' && /^[A-Z0-9]+\\/[A-Z0-9]+$/.test(symbol);\nconst timeframeOk = typeof timeframe === 'string' && /^\\d+[mhdw]$/.test(timeframe);\nif (!pairOk || !timeframeOk || mode !== 'DRY_RUN') {\n  return [{ json: { ok: false, statusCode: 400, error: { code: 'INVALID_INPUT', message: 'symbol and timeframe are required; mode must be DRY_RUN.' } } }];\n}\nconst paperContext = body?.paper_context && typeof body.paper_context === 'object' && !Array.isArray(body.paper_context) ? body.paper_context : null;\nconst historyDays = 90;\nconst end = new Date();\nconst start = new Date(end.getTime() - historyDays * 24 * 60 * 60 * 1000);\nconst dateKey = (date) => date.toISOString().slice(0, 10).replaceAll('-', '');\nconst timerange = `${dateKey(start)}-${dateKey(end)}`;\nreturn [{ json: { ok: true, symbol, timeframe, mode: 'DRY_RUN', paperContext, historyDays, timerange } }];"
       },
       "id": "3fa5651b-24ef-42aa-9a73-bab87086a102",
       "name": "Validate Input",
@@ -69,7 +69,7 @@
     {
       "parameters": {
         "method": "GET",
-        "url": "https://ferramentas-freqtrade.m5mfeg.easypanel.host/api/v1/pair_candles",
+        "url": "https://ferramentas-freqtrade.m5mfeg.easypanel.host/api/v1/pair_history",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpBasicAuth",
         "sendQuery": true,
@@ -84,17 +84,21 @@
               "value": "={{ $('Validate Input').first().json.timeframe }}"
             },
             {
-              "name": "limit",
-              "value": "30"
+              "name": "strategy",
+              "value": "YOUR_FREQTRADE_STRATEGY_NAME"
+            },
+            {
+              "name": "timerange",
+              "value": "={{ $('Validate Input').first().json.timerange }}"
             }
           ]
         },
         "options": {
-          "timeout": 30000
+          "timeout": 90000
         }
       },
       "id": "3fa5651b-24ef-42aa-9a73-bab87086a104",
-      "name": "Get Freqtrade Candles",
+      "name": "Get Freqtrade History",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
@@ -106,7 +110,7 @@
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "try {\n  const source = $json;\n  const payload = source?.body ?? source;\n  let rows = [];\n  if (Array.isArray(payload?.data) && Array.isArray(payload?.columns)) {\n    rows = payload.data.map((values) => Object.fromEntries(payload.columns.map((key, i) => [key, values[i] ?? null])));\n  } else if (Array.isArray(payload?.candles)) {\n    rows = payload.candles;\n  } else if (Array.isArray(payload)) {\n    rows = payload;\n  }\n  const fields = ['date','open','high','low','close','volume','rsi','adx','mfi','macd','macdsignal','macdhist','bb_lowerband','bb_middleband','bb_upperband','bb_percent','bb_width','sar','tema','fastd','fastk'];\n  const candles = rows.map((row) => {\n    if (!row || typeof row !== 'object' || Array.isArray(row)) return null;\n    const selected = {};\n    for (const key of fields) if (Object.hasOwn(row, key)) selected[key] = row[key];\n    return selected;\n  }).filter(Boolean).slice(-30);\n  if (!candles.length) return [{ json: { ok: false, statusCode: 502, error: { code: 'NO_CANDLES', message: 'Freqtrade returned no candle rows in a supported format.' } } }];\n  const current = candles.at(-1);\n  const n = (value) => value === null || value === undefined || value === '' ? null : Number.isFinite(Number(value)) ? Number(value) : null;\n  const context = { symbol: $('Validate Input').first().json.symbol, timeframe: $('Validate Input').first().json.timeframe, mode: 'DRY_RUN', current: {\n    price: n(current.close), date: current.date ?? null, volume: n(current.volume), rsi: n(current.rsi), adx: n(current.adx), mfi: n(current.mfi),\n    macd: n(current.macd), macd_signal: n(current.macdsignal), macd_hist: n(current.macdhist), bb_lower: n(current.bb_lowerband),\n    bb_middle: n(current.bb_middleband), bb_upper: n(current.bb_upperband), bb_percent: n(current.bb_percent), bb_width: n(current.bb_width),\n    sar: n(current.sar), tema: n(current.tema), fastd: n(current.fastd), fastk: n(current.fastk), open: n(current.open), high: n(current.high), low: n(current.low)\n  }, candles };\n  return [{ json: { ok: true, context } }];\n} catch (error) {\n  return [{ json: { ok: false, statusCode: 502, error: { code: 'CANDLE_NORMALIZATION_FAILED', message: 'Could not normalize Freqtrade candle response.' } } }];\n}"
+        "jsCode": "try {\n  const source = $json;\n  const payload = source?.body ?? source;\n  let rows = [];\n  if (Array.isArray(payload?.data) && Array.isArray(payload?.columns)) {\n    rows = payload.data.map((values) => Object.fromEntries(payload.columns.map((key, i) => [key, values[i] ?? null])));\n  } else if (Array.isArray(payload?.candles)) {\n    rows = payload.candles;\n  } else if (Array.isArray(payload)) {\n    rows = payload;\n  }\n\n  const fields = ['date','open','high','low','close','volume','rsi','adx','mfi','macd','macdsignal','macdhist','bb_lowerband','bb_middleband','bb_upperband','bb_percent','bb_width','sar','tema','fastd','fastk'];\n  const n = (value) => value === null || value === undefined || value === '' ? null : Number.isFinite(Number(value)) ? Number(value) : null;\n  const timestamp = (value) => {\n    if (typeof value === 'number') return value < 1e12 ? value * 1000 : value;\n    const parsed = Date.parse(value);\n    return Number.isFinite(parsed) ? parsed : NaN;\n  };\n  const isoDate = (value) => {\n    const ms = timestamp(value);\n    return Number.isFinite(ms) ? new Date(ms).toISOString() : null;\n  };\n  const candles = rows.map((row) => {\n    if (!row || typeof row !== 'object' || Array.isArray(row)) return null;\n    const selected = {};\n    for (const key of fields) if (Object.hasOwn(row, key)) selected[key] = row[key];\n    const ms = timestamp(selected.date);\n    return Number.isFinite(ms) ? { ...selected, __ts: ms } : null;\n  }).filter(Boolean).sort((a, b) => a.__ts - b.__ts);\n\n  if (!candles.length) return [{ json: { ok: false, statusCode: 502, error: { code: 'NO_HISTORY', message: 'Freqtrade returned no analyzed history rows. Check downloaded pair data, timeframe, and strategy name.' } } }];\n\n  const daily = new Map();\n  for (const candle of candles) {\n    const day = new Date(candle.__ts).toISOString().slice(0, 10);\n    const open = n(candle.open);\n    const high = n(candle.high);\n    const low = n(candle.low);\n    const close = n(candle.close);\n    const volume = n(candle.volume) ?? 0;\n    let bucket = daily.get(day);\n    if (!bucket) {\n      bucket = { date: day, open, high, low, close, volume: 0, lastTs: candle.__ts, indicators: {} };\n      daily.set(day, bucket);\n    }\n    if (high !== null) bucket.high = bucket.high === null ? high : Math.max(bucket.high, high);\n    if (low !== null) bucket.low = bucket.low === null ? low : Math.min(bucket.low, low);\n    if (close !== null) bucket.close = close;\n    bucket.volume += volume;\n    if (candle.__ts >= bucket.lastTs) {\n      bucket.lastTs = candle.__ts;\n      for (const [sourceKey, targetKey] of [['rsi','rsi'],['adx','adx'],['mfi','mfi'],['macd','macd'],['macdsignal','macd_signal'],['macdhist','macd_hist'],['bb_lowerband','bb_lower'],['bb_middleband','bb_middle'],['bb_upperband','bb_upper'],['bb_percent','bb_percent'],['bb_width','bb_width'],['sar','sar'],['tema','tema'],['fastd','fastd'],['fastk','fastk']]) bucket.indicators[targetKey] = n(candle[sourceKey]);\n    }\n  }\n  const dailySeries = [...daily.values()].map(({ lastTs, indicators, ...day }) => ({ ...day, ...indicators, volume: Number(day.volume.toFixed(4)) }));\n  const first = dailySeries[0];\n  const last = dailySeries[dailySeries.length - 1];\n  const closeValues = dailySeries.map((day) => day.close).filter((value) => Number.isFinite(value));\n  let peak = closeValues[0] ?? null;\n  let maxDrawdownPct = 0;\n  for (const close of closeValues) {\n    peak = peak === null ? close : Math.max(peak, close);\n    if (peak > 0) maxDrawdownPct = Math.max(maxDrawdownPct, (peak - close) / peak * 100);\n  }\n  const dayReturns = dailySeries.slice(1).flatMap((day, i) => {\n    const previous = dailySeries[i].close;\n    return previous > 0 && day.close !== null ? [(day.close / previous - 1) * 100] : [];\n  });\n  const ranges = dailySeries.flatMap((day) => day.low > 0 && day.high !== null ? [(day.high - day.low) / day.low * 100] : []);\n  const summary = {\n    source: 'Freqtrade pair_history',\n    requestedDays: $('Validate Input').first().json.historyDays,\n    candleCount: candles.length,\n    dailyPointCount: dailySeries.length,\n    start: dailySeries[0].date,\n    end: dailySeries[dailySeries.length - 1].date,\n    netChangePct: first.open > 0 && last.close !== null ? Number(((last.close / first.open - 1) * 100).toFixed(2)) : null,\n    upDays: dayReturns.filter((value) => value > 0).length,\n    downDays: dayReturns.filter((value) => value < 0).length,\n    averageDailyRangePct: ranges.length ? Number((ranges.reduce((a, b) => a + b, 0) / ranges.length).toFixed(2)) : null,\n    maxDrawdownPct: Number(maxDrawdownPct.toFixed(2)),\n    dailySeries\n  };\n\n  const recent = candles.slice(-30).map(({ __ts, ...candle }) => ({ ...candle, date: isoDate(candle.date) }));\n  const current = recent.at(-1);\n  const context = {\n    symbol: $('Validate Input').first().json.symbol,\n    timeframe: $('Validate Input').first().json.timeframe,\n    mode: 'DRY_RUN',\n    current: {\n      price: n(current.close), date: current.date ?? null, volume: n(current.volume), rsi: n(current.rsi), adx: n(current.adx), mfi: n(current.mfi),\n      macd: n(current.macd), macd_signal: n(current.macdsignal), macd_hist: n(current.macdhist), bb_lower: n(current.bb_lowerband),\n      bb_middle: n(current.bb_middleband), bb_upper: n(current.bb_upperband), bb_percent: n(current.bb_percent), bb_width: n(current.bb_width),\n      sar: n(current.sar), tema: n(current.tema), fastd: n(current.fastd), fastk: n(current.fastk), open: n(current.open), high: n(current.high), low: n(current.low)\n    },\n    historicalSummary: summary,\n    candles: recent\n  };\n  return [{ json: { ok: true, context } }];\n} catch (error) {\n  return [{ json: { ok: false, statusCode: 502, error: { code: 'CANDLE_NORMALIZATION_FAILED', message: 'Could not normalize Freqtrade historical response.' } } }];\n}"
       },
       "id": "3fa5651b-24ef-42aa-9a73-bab87086a105",
       "name": "Normalize Market Data",
@@ -249,7 +253,7 @@
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const context = $('Prepare AI Context').first().json.context;\nreturn [{ json: { statusCode: 200, response: { ...$json.response, market: context.current, candles: context.candles } } }];"
+        "jsCode": "const context = $('Prepare AI Context').first().json.context;\nreturn [{ json: { statusCode: 200, response: { ...$json.response, market: { ...context.current, historicalSummary: context.historicalSummary }, candles: context.candles } } }];"
       },
       "id": "3fa5651b-24ef-42aa-9a73-bab87086a111",
       "name": "Success Response",
@@ -383,24 +387,6 @@
         [
           {
             "node": "Input Error Response",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Get Freqtrade Candles": {
-      "main": [
-        [
-          {
-            "node": "Normalize Market Data",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Freqtrade Request Error",
             "type": "main",
             "index": 0
           }
@@ -554,6 +540,24 @@
         [
           {
             "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Freqtrade History": {
+      "main": [
+        [
+          {
+            "node": "Normalize Market Data",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Freqtrade Request Error",
             "type": "main",
             "index": 0
           }

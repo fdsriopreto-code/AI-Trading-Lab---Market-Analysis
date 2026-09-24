@@ -6,11 +6,19 @@ Import `AI Trading Lab - Market Analysis.json` into the existing n8n instance. T
 
 1. Import the JSON and open the workflow.
 2. In **Webhook**, create/select a Header Auth credential. Set its header name to `Authorization` and its value to `Bearer <the same random token configured as N8N_WEBHOOK_TOKEN in the backend>`. Use a long random token; do not commit it.
-3. In **Get Freqtrade Candles**, create/select an HTTP Basic Auth credential with the Freqtrade API username/password. The node points at the previously supplied public host. Prefer replacing its host with the EasyPanel private service URL if n8n and Freqtrade share a private network. Keep the Freqtrade API inaccessible from the public internet where possible.
+3. In **Get Freqtrade History**, create/select an HTTP Basic Auth credential with the Freqtrade API username/password. The node points at the previously supplied public host. Prefer replacing its host with the EasyPanel private service URL if n8n and Freqtrade share a private network. Keep the Freqtrade API inaccessible from the public internet where possible.
 4. The included export uses OpenAI and needs a Header Auth credential with `Authorization: Bearer <OpenAI API key>`. If using your Gemini **Message a model** node instead, assign its Google Gemini credential and follow the Portuguese prompt setup below.
 5. Confirm n8n can reach Freqtrade and your selected AI provider. Save, publish/activate, and copy the **production** Webhook URL into `N8N_ANALYZE_WEBHOOK_URL` on the backend. Set `N8N_WEBHOOK_TOKEN` there to the same token used by the Webhook credential. Restart/redeploy the backend after changing variables.
 
 The backend sends a synchronous request; its HTTP timeout is 120 seconds. Ensure the n8n webhook, any reverse proxy, and model call can complete within that window.
+
+## Historical market data setup
+
+The imported template uses Freqtrade's `pair_history` endpoint, which requires the exact strategy class name installed in your Freqtrade instance. In **Get Freqtrade History**, replace the `strategy` query value `YOUR_FREQTRADE_STRATEGY_NAME` with that class name. The template requests 90 days; change `historyDays` in **Validate Input** if you want a different lookback. The AI receives a compact daily series plus the last 30 candles, rather than tens of thousands of 5-minute rows.
+
+`pair_history` only returns data available to Freqtrade for the requested pair/timeframe and calculates indicators through that strategy. If the data directory does not contain the requested months, download the pair/timeframe history first (for example, `freqtrade download-data --exchange binance --pairs ETH/USDT --timeframes 5m --days 90`, adapting the exchange, pairs, and timeframe to your setup). Freqtrade documents `pair_history` parameters and historical data downloads in its [REST API documentation](https://www.freqtrade.io/en/stable/rest-api/) and [data download guide](https://www.freqtrade.io/en/stable/data-download/).
+
+The request can be heavier than the previous 30-candle call. Its n8n timeout is set to 90 seconds; the full webhook chain must still finish inside the backend's 120-second timeout.
 
 ## Gemini prompt in Portuguese (Brazil)
 
@@ -30,9 +38,9 @@ In the Code node after Gemini, parse `content.parts[0].text` as JSON (not OpenAI
 
 ## Workflow behavior
 
-Webhook path: `POST /webhook/ai-trading-lab-market-analysis` (n8n production URL includes `/webhook/`). It accepts `{ "symbol": "BTC/USDT", "timeframe": "5m", "mode": "DRY_RUN", "paper_context": { ... } }`. The workflow requests up to 30 candles using only `GET /api/v1/pair_candles?pair=...&timeframe=...&limit=30`. `paper_context` contains a simulated portfolio snapshot and historical forward-outcome summary, so include it in the AI user prompt. It does not call start/stop, balance, buy, sell, force-entry, or trade endpoints.
+Webhook path: `POST /webhook/ai-trading-lab-market-analysis` (n8n production URL includes `/webhook/`). It accepts `{ "symbol": "BTC/USDT", "timeframe": "5m", "mode": "DRY_RUN", "paper_context": { ... } }`. The workflow requests 90 days from `GET /api/v1/pair_history?pair=...&timeframe=...&strategy=...&timerange=...`. The Code node condenses that result into one point per UTC day for the AI and keeps only the latest 30 candles separately for the simulator. `paper_context` contains a simulated portfolio snapshot and historical forward-outcome summary, so include it in the AI user prompt. It does not call start/stop, balance, buy, sell, force-entry, or trade endpoints.
 
-Freqtrade responses in both `columns` + `data` array form and object-row form are normalized. Only date, OHLCV, and the specified indicators are kept. The latest row is used for `current`; the last 30 rows are sent to the model unchanged. Indicators are not recalculated. HOLD remains a valid model decision.
+Freqtrade responses in both `columns` + `data` array form and object-row form are normalized. The historical response is grouped by UTC day into OHLCV plus the last available indicator values for that day; aggregate fields include the available date range, daily up/down counts, daily range, maximum drawdown, and net change. The last 30 original candles are retained for current analysis and paper-trading outcome evaluation. Indicators are provided by the configured Freqtrade strategy and are not recalculated in n8n. HOLD remains a valid model decision.
 
 Successful webhook response includes the validated decision plus the current market snapshot and candles (HTTP 200):
 
