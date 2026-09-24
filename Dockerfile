@@ -13,7 +13,7 @@ COPY backend/package.json backend/package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/backend/dist ./dist
 COPY backend/migrations ./migrations
-COPY index.html app.js app.css ./public/
+COPY index.html app.js app.css i18n.js ./public/
 COPY frontend/config.js ./public/config.js
 ENV SERVE_FRONTEND=true
 USER node

@@ -3,6 +3,8 @@
   const config = window.AI_TRADING_LAB_CONFIG || {};
   const API_BASE_URL = String(config.apiBaseUrl || '').replace(/\/$/, '');
   const mode = API_BASE_URL || config.mode === 'api' ? 'api' : config.mode === 'mock' ? 'mock' : 'unconfigured';
+  const t = (text, values) => window.AITradingLabI18n?.t(text, values) ?? text;
+  const locale = () => window.AITradingLabI18n?.language === 'en' ? 'en-US' : 'pt-BR';
   const $ = (selector, root = document) => root.querySelector(selector);
   const el = (tag, text, className) => { const node = document.createElement(tag); if (text !== undefined) node.textContent = text; if (className) node.className = className; return node; };
   const mockDecision = (id, decision, confidence, price, time, reason) => ({ id, symbol: 'BTC/USDT', timeframe: '5m', decision, confidence, price, entry: null, stopLoss: null, takeProfit: null, reason, indicators: {}, candles: [], createdAt: new Date(Date.now() - id * 300000).toISOString() });
@@ -35,14 +37,14 @@
   function setSource(label, live = false, demoMode = false) { const badge = $('#dataMode'); if (badge) { badge.textContent = label; badge.className = `dry ${live ? 'source-tag live' : demoMode ? 'source-tag demo' : ''}`; } }
   function setText(selector, value, formatter = String) { const node = $(selector); if (node) { node.textContent = value === null || value === undefined || value === '' ? 'N/A' : formatter(value); node.classList.toggle('na', value === null || value === undefined || value === ''); } }
   function percent(value) { return `${(Number(value) * 100).toFixed(0)}%`; }
-  function money(value) { return `$${Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`; }
-  function dateTime(value) { if (!value) return 'N/A'; const date = new Date(value); return Number.isNaN(date.getTime()) ? 'N/A' : date.toLocaleString(); }
+  function money(value) { return `$${Number(value).toLocaleString(locale(), { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`; }
+  function dateTime(value) { if (!value) return 'N/A'; const date = new Date(value); return Number.isNaN(date.getTime()) ? 'N/A' : date.toLocaleString(locale()); }
   function badge(decision) { const node = el('span', decision || 'N/A', `badge ${decision === 'BUY' ? 'buy' : decision === 'SELL' ? 'sell' : 'hold'}`); return node; }
   function makeCell(row, text, className) { const td = el('td', text == null || text === '' ? '—' : String(text), className); row.appendChild(td); return td; }
   function renderDecisions(rows, failed = false) {
     const body = $('#view-AI Decisions tbody'); if (!body) return; body.replaceChildren();
     if (!rows?.length) { const tr = el('tr'); const td = el('td', failed ? 'Unable to load AI decisions.' : 'No AI decisions yet.', 'row-empty'); td.colSpan = 9; tr.appendChild(td); body.appendChild(tr); return; }
-    for (const item of rows) { const tr = el('tr'); makeCell(tr, dateTime(item.createdAt), 'mono'); makeCell(tr, item.symbol); makeCell(tr, item.price == null ? 'N/A' : Number(item.price).toLocaleString('en-US'), 'mono'); const d = el('td'); d.appendChild(badge(item.decision)); tr.appendChild(d); makeCell(tr, item.confidence == null ? 'N/A' : percent(item.confidence), 'mono'); makeCell(tr, item.entry); makeCell(tr, item.stopLoss); makeCell(tr, item.takeProfit); makeCell(tr, item.reason); body.appendChild(tr); }
+    for (const item of rows) { const tr = el('tr'); makeCell(tr, dateTime(item.createdAt), 'mono'); makeCell(tr, item.symbol); makeCell(tr, item.price == null ? 'N/A' : Number(item.price).toLocaleString(locale()), 'mono'); const d = el('td'); d.appendChild(badge(item.decision)); tr.appendChild(d); makeCell(tr, item.confidence == null ? 'N/A' : percent(item.confidence), 'mono'); makeCell(tr, item.entry); makeCell(tr, item.stopLoss); makeCell(tr, item.takeProfit); makeCell(tr, item.reason); body.appendChild(tr); }
   }
   function renderTrades(rows, failed = false) {
     const host = $('#view-Trades .card'); if (!host) return; host.replaceChildren();
@@ -55,7 +57,7 @@
   }
   function renderLatest(item) {
     const decision = item?.decision ?? null; setText('#decision', decision); setText('#metricDecision', decision); setText('#confidence', item?.confidence, percent); setText('#metricConfidence', item?.confidence, percent);
-    setText('#reason', item?.reason); setText('#decisionTimestamp', item?.createdAt, value => `RECORDED ${dateTime(value)}`);
+    setText('#reason', item?.reason); setText('#decisionTimestamp', item?.createdAt, value => t('RECORDED {date}', { date: dateTime(value) }));
     setText('#decisionEntry', item?.entry); setText('#decisionStop', item?.stopLoss); setText('#decisionTarget', item?.takeProfit);
     const badgeNode = $('#decisionBadge'); if (badgeNode) { badgeNode.textContent = decision || 'N/A'; badgeNode.className = `badge ${decision === 'BUY' ? 'buy' : decision === 'SELL' ? 'sell' : 'hold'}`; }
     const bar = $('#confidenceBar'); if (bar) bar.style.width = item?.confidence == null ? '0%' : `${Math.max(0, Math.min(1, Number(item.confidence))) * 100}%`;
@@ -95,9 +97,9 @@
     if (decisions.status === 'fulfilled') renderDecisions(decisions.value); else renderDecisions([], true);
     if (trades.status === 'fulfilled') renderTrades(trades.value); else renderTrades([], true);
     const healthNode = $('.status');
-    if (healthNode) healthNode.innerHTML = health.status === 'fulfilled' && health.value.api === 'ok' && health.value.database === 'ok' ? '<i class="dot"></i> SYSTEM ONLINE' : '<i class="dot"></i> API / DB ISSUE';
+    if (healthNode) healthNode.innerHTML = health.status === 'fulfilled' && health.value.api === 'ok' && health.value.database === 'ok' ? `<i class="dot"></i> ${t('SYSTEM ONLINE')}` : `<i class="dot"></i> ${t('API / DB ISSUE')}`;
     const failures = results.filter(result => result.status === 'rejected');
-    if (failures.length) setState('error', `API data is incomplete (${failures.length} request${failures.length === 1 ? '' : 's'} failed). Mock values are not substituted. ${failures[0].reason?.message || ''}`);
+    if (failures.length) setState('error', t('API data is incomplete ({count} request(s) failed). Mock values are not substituted. {error}', { count: failures.length, error: failures[0].reason?.message || '' }));
     else setState('success', 'LIVE DATA · Loaded from the configured backend API. Market price and balance show N/A until those providers are connected.');
   }
   function selectedSymbol() { const select = $('#view-Market select'); return (select?.value || 'BTC / USDT').replaceAll(' ', ''); }
@@ -115,13 +117,14 @@
   document.querySelectorAll('.analyze').forEach(button => button.addEventListener('click', async () => {
     if (mode !== 'api') { toast(mode === 'mock' ? 'Demo mode: configure a backend API to request analysis.' : 'Configure the backend API before requesting analysis.'); return; }
     const buttons = [...document.querySelectorAll('.analyze')]; buttons.forEach(item => { item.disabled = true; item.textContent = 'Analyzing market…'; });
-    setState('loading', `Analyzing ${selectedSymbol()} on ${selectedTimeframe()}…`);
+    setState('loading', t('Analyzing {symbol} on {timeframe}…', { symbol: selectedSymbol(), timeframe: selectedTimeframe() }));
     try {
       const result = await services.analyze(selectedSymbol(), selectedTimeframe());
       renderLatest(result); await loadData(); toast('Analysis recorded by the backend.');
     } catch (error) { setState('error', error.message || 'Analysis request failed.'); toast(error.message || 'Analysis request failed.'); }
     finally { buttons.forEach(item => { item.disabled = false; item.innerHTML = '✳ &nbsp;Analyze now'; }); }
   }));
+  window.addEventListener('ai-trading-lab-language-change', () => { if (mode === 'api' || mode === 'mock') loadData(); });
   const refresh = $('#refresh'); if (refresh) refresh.setAttribute('aria-label', 'Refresh dashboard data');
   loadData();
 })();

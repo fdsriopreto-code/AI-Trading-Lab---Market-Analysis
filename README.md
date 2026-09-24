@@ -1,6 +1,6 @@
 # AI Trading Lab — Market Analysis
 
-Static dashboard + Fastify API + PostgreSQL, packaged for EasyPanel. The frontend design is unchanged. Use the root `Dockerfile` if deploying as a single EasyPanel **App** service with a separate EasyPanel PostgreSQL service; it serves the dashboard and API together on port `3000`. Or use `docker-compose.yml` as a **Compose** service to run the frontend, API, and PostgreSQL together; Nginx proxies `/api/*` and `/health` over the private Compose network.
+Static dashboard + Fastify API + PostgreSQL, packaged for EasyPanel. The frontend design is unchanged. The interface supports Português (Brazil) and English, and saves the selected language in the browser. Use the root `Dockerfile` if deploying as a single EasyPanel **App** service with a separate EasyPanel PostgreSQL service; it serves the dashboard and API together on port `3000`. Or use `docker-compose.yml` as a **Compose** service to run the frontend, API, and PostgreSQL together; Nginx proxies `/api/*` and `/health` over the private Compose network.
 
 ## Deploy on EasyPanel
 
@@ -12,7 +12,7 @@ Use GitHub source, branch `main`, build path `/`, Dockerfile build type, and Doc
 
 Create a **Compose** service using this Git repository, branch `main`, build path `/`, and Compose file `docker-compose.yml`. Set `POSTGRES_PASSWORD` to a long random alphanumeric secret. Deploy, then add the public HTTPS domain to the `frontend` service on internal port `80`. Do not expose PostgreSQL or the API directly. No `ports` mapping is needed.
 
-In either option, import and configure the n8n workflow using [`n8n/README.md`](n8n/README.md). Set `N8N_ANALYZE_WEBHOOK_URL` and the matching `N8N_WEBHOOK_TOKEN` in the backend service, then redeploy.
+In either option, import and configure the n8n workflow using [`n8n/README.md`](n8n/README.md). Its Gemini prompt section includes the Portuguese (Brazil) instructions. Set `N8N_ANALYZE_WEBHOOK_URL` and the matching `N8N_WEBHOOK_TOKEN` in the backend service, then redeploy.
 
 Compose creates the `postgres_data` named volume. It survives container replacement, but it is not a backup; configure and periodically verify off-server PostgreSQL backups. Do not delete the volume when replacing the Compose service.
 
