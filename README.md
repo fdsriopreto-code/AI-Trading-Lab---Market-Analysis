@@ -1,14 +1,18 @@
 # AI Trading Lab — Market Analysis
 
-Static dashboard + Fastify API + PostgreSQL, packaged for a Docker Compose deployment on EasyPanel. The frontend design is unchanged; Nginx serves it and proxies `/api/*` and `/health` to the API on the private Compose network. PostgreSQL is private and uses a named persistent volume.
+Static dashboard + Fastify API + PostgreSQL, packaged for EasyPanel. The frontend design is unchanged. Use the root `Dockerfile` if deploying as a single EasyPanel **App** service with a separate EasyPanel PostgreSQL service; it serves the dashboard and API together on port `3000`. Or use `docker-compose.yml` as a **Compose** service to run the frontend, API, and PostgreSQL together; Nginx proxies `/api/*` and `/health` over the private Compose network.
 
 ## Deploy on EasyPanel
 
-1. Create a **Compose** service using this Git repository, branch `main`, build path `/`, and Compose file `docker-compose.yml`.
-2. In the service environment, set `POSTGRES_PASSWORD` to a long random alphanumeric secret. Keep the generated value; changing it after the database is initialized requires a PostgreSQL password rotation, not just changing this variable. `POSTGRES_DB` and `POSTGRES_USER` default to `ai_trading_lab`.
-3. Deploy, then add the public HTTPS domain to the `frontend` service on internal port `80`. Do not expose PostgreSQL or the API directly. No `ports` mapping is needed; EasyPanel routes the domain to the frontend container.
-4. Check the `frontend`, `api`, and `postgres` container health in EasyPanel. `GET /health` checks PostgreSQL connectivity.
-5. Import and configure the n8n workflow using [`n8n/README.md`](n8n/README.md). Set `N8N_ANALYZE_WEBHOOK_URL` and the matching `N8N_WEBHOOK_TOKEN` in EasyPanel, then redeploy.
+### Existing EasyPanel App service + managed PostgreSQL
+
+Use GitHub source, branch `main`, build path `/`, Dockerfile build type, and Dockerfile path `Dockerfile`. Expose the domain on port `3000`. Configure runtime environment variables on the App service: `DATABASE_URL`, `PGSSL`, `FRONTEND_ORIGIN`, `N8N_ANALYZE_WEBHOOK_URL`, and `N8N_WEBHOOK_TOKEN`. Use the PostgreSQL service's private host and credentials in `DATABASE_URL`. Redeploy after saving.
+
+### Compose alternative
+
+Create a **Compose** service using this Git repository, branch `main`, build path `/`, and Compose file `docker-compose.yml`. Set `POSTGRES_PASSWORD` to a long random alphanumeric secret. Deploy, then add the public HTTPS domain to the `frontend` service on internal port `80`. Do not expose PostgreSQL or the API directly. No `ports` mapping is needed.
+
+In either option, import and configure the n8n workflow using [`n8n/README.md`](n8n/README.md). Set `N8N_ANALYZE_WEBHOOK_URL` and the matching `N8N_WEBHOOK_TOKEN` in the backend service, then redeploy.
 
 Compose creates the `postgres_data` named volume. It survives container replacement, but it is not a backup; configure and periodically verify off-server PostgreSQL backups. Do not delete the volume when replacing the Compose service.
 

@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { readFile } from 'node:fs/promises';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import { z } from 'zod';
@@ -6,6 +7,23 @@ import { pool } from './db.js';
 
 const app = Fastify({ logger: true, bodyLimit: 1_000_000 });
 await app.register(cors, { origin: process.env.FRONTEND_ORIGIN ? [process.env.FRONTEND_ORIGIN] : false });
+
+// The root Dockerfile can serve the dashboard and API from one EasyPanel App service.
+// The Compose deployment keeps its separate Nginx frontend and leaves this disabled.
+if (process.env.SERVE_FRONTEND === 'true') {
+  const assets = new Map([
+    ['/', ['index.html', 'text/html; charset=utf-8']],
+    ['/index.html', ['index.html', 'text/html; charset=utf-8']],
+    ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
+    ['/app.css', ['app.css', 'text/css; charset=utf-8']],
+    ['/config.js', ['config.js', 'text/javascript; charset=utf-8']]
+  ] as const);
+  for (const [route, [filename, contentType]] of assets) {
+    app.get(route, async (_request, reply) => reply.type(contentType).header('cache-control', 'no-cache').send(
+      await readFile(new URL(`../public/${filename}`, import.meta.url))
+    ));
+  }
+}
 
 const decisionName = z.enum(['BUY', 'SELL', 'HOLD']);
 const DecisionResponse = z.object({
